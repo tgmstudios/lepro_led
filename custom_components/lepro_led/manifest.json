@@ -7,6 +7,5 @@
   "issue_tracker": "https://github.com/Sanji78/lepro_led/issues",
   "dependencies": [],
   "codeowners": ["@Sanji78"],
-  "requirements": ["aiohttp", "aiomqtt>=2.4.0", "aiofiles"],
-  "translations": ["it","en"]
+  "requirements": ["aiohttp", "aiomqtt>=2.4.0", "aiofiles"]
 }
