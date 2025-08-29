@@ -4,8 +4,11 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Legacy YAML setup - we don't use it, but it must be defined."""
+# Config entry only (no YAML)
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+async def async_setup(hass: HomeAssistant, config: dict):
+    """Set up Lepro LED integration (not via YAML)."""
     return True
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
