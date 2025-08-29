@@ -1,0 +1,64 @@
+{
+  "title": "Striscia LED Lepro",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Collega Lepro LED",
+        "description": "Accedi con il tuo account Lepro. Verrà generato un MAC virtuale per l'autenticazione al cloud.",
+        "data": {
+          "account": "Account (email/telefono)",
+          "password": "Password",
+          "language": "Lingua dell'app"
+        },
+        "data_description": {
+          "language": "Usata per le richieste verso le API Lepro."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossibile connettersi",
+      "invalid_auth": "Account o password non validi",
+      "unknown": "Errore imprevisto"
+    }
+  },
+  "entity": {
+    "light": {
+        "strip": {
+          "name": "Lepro - Striscia LED",
+          "state_attributes": {
+            "effect": {
+              "name": "Effetto",
+              "state": {
+                "solid": "Fisso",
+                "breath": "Respiro",
+                "gradient": "Gradiente",
+                "clockwise": "Orario",
+                "counterclockwise": "Antiorario",
+                "circular": "Circolare",
+                "flash": "Flash",
+                "wave_1": "Onda 1",
+                "wave_2": "Onda 2",
+                "wave_3": "Onda 3",
+                "wave_4": "Onda 4",
+                "laser_1": "Laser 1",
+                "laser_2": "Laser 2",
+                "laser_3": "Laser 3",
+                "laser_4": "Laser 4"
+              }
+            }
+          }
+        },
+        "segment": {
+          "name": "Segmento {index}"
+        }
+    },
+    "number": {
+        "speed": {
+          "name": "Velocità"
+        },
+        "sensitivity": {
+          "name": "Sensibilità"
+        }
+    }
+  }
+}

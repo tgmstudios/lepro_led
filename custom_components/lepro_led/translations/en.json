@@ -1,0 +1,64 @@
+{
+  "title": "Lepro LED Strip",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Lepro LED",
+        "description": "Sign in with your Lepro account. A virtual MAC is generated to authenticate with the cloud.",
+        "data": {
+          "account": "Account (email/phone)",
+          "password": "Password",
+          "language": "App language"
+        },
+        "data_description": {
+          "language": "Used for requests to the Lepro API."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect",
+      "invalid_auth": "Invalid account or password",
+      "unknown": "Unexpected error"
+    }
+  },
+  "entity": {
+    "light": {
+        "strip": {
+          "name": "LED strip",
+          "state_attributes": {
+            "effect": {
+              "name": "Effect",
+              "state": {
+                "solid": "Solid",
+                "breath": "Breath",
+                "gradient": "Gradient",
+                "clockwise": "Clockwise",
+                "counterclockwise": "Counter-clockwise",
+                "circular": "Circular",
+                "flash": "Flash",
+                "wave_1": "Wave 1",
+                "wave_2": "Wave 2",
+                "wave_3": "Wave 3",
+                "wave_4": "Wave 4",
+                "laser_1": "Laser 1",
+                "laser_2": "Laser 2",
+                "laser_3": "Laser 3",
+                "laser_4": "Laser 4"
+              }
+            }
+          }
+        },
+        "segment": {
+          "name": "Segment {index}"
+        }
+    },
+    "number": {
+        "speed": {
+          "name": "Speed"
+        },
+        "sensitivity": {
+          "name": "Sensitivity"
+        }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "domain": "lepro_led",
+  "name": "Lepro LED Strip",
+  "version": "1.0.0",
+  "config_flow": true,
+  "documentation": "https://github.com/Sanji78/lepro_led",
+  "issue_tracker": "https://github.com/Sanji78/lepro_led/issues",
+  "dependencies": [],
+  "codeowners": ["@Sanji78"],
+  "requirements": ["aiohttp", "aiomqtt>=2.4.0", "aiofiles"],
+  "translations": ["it","en"]
+}
