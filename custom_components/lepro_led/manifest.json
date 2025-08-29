@@ -1,11 +1,13 @@
 {
   "domain": "lepro_led",
   "name": "Lepro LED Strip",
-  "version": "1.0.0",
-  "config_flow": true,
-  "documentation": "https://github.com/Sanji78/lepro_led",
-  "issue_tracker": "https://github.com/Sanji78/lepro_led/issues",
-  "dependencies": [],
   "codeowners": ["@Sanji78"],
-  "requirements": ["aiohttp", "aiomqtt>=2.4.0", "aiofiles"]
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Sanji78/lepro_led",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/Sanji78/lepro_led/issues",
+  "loggers": ["custom_components.lepro_led"],
+  "requirements": ["aiohttp", "aiomqtt>=2.4.0", "aiofiles"],
+  "version": "1.0.1"
 }
