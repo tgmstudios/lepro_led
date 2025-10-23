@@ -126,7 +126,7 @@ async def async_login(session, account, password, mac, language="it", fcm_token=
         "Device-Model": "custom_integration",
         "Device-System": "custom",
         "GMT": "+0",
-        "Host": "api-eu-iot.lepro.com",
+        "Host": "api-iot.lepro.com",
         "Language": language,
         "Platform": "2",
         "Screen-Size": "1536*2048",
