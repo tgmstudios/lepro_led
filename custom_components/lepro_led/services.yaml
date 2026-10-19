@@ -22,8 +22,9 @@ set_scene:
   description: >-
     Apply one of the six verified DIY effects with a custom colour palette, speed and brightness in a
     single command. Colours are spread in even blocks over the 25 segments. Fields you leave out keep
-    their current value. A strip in music mode needs an explicit effect. Local palette only; it does
-    not read or save Lepro cloud scenes.
+    their current value. Palette, speed or direction changes in music mode need an explicit DIY effect;
+    brightness-only does not. The palette is supplied in this call and commands use cloud MQTT;
+    this service does not read or save Lepro cloud scenes. Multi-strip calls are not distributed transactions.
   fields:
     entity_id:
       required: true
@@ -62,7 +63,7 @@ set_scene:
           max: 100
           unit_of_measurement: "%"
     direction:
-      description: Only for clockwise/counterclockwise effects; flips the current directional effect or must match the given effect.
+      description: Sets clockwise/counterclockwise direction for a directional effect; must match an explicitly provided effect.
       selector:
         select:
           options: [clockwise, counterclockwise]

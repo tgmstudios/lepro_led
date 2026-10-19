@@ -3,8 +3,6 @@
 Monitor and control your **Lepro LED** devices from Home Assistant.  
 This custom integration logs in to **Lepro Cloud**, retrieves your lights and strips, and exposes them as controllable lights in HA.
 
-[![Validate with HACS](https://img.shields.io/badge/HACS-validated-41BDF5)](https://hacs.xyz/)  
-[![hassfest](https://img.shields.io/badge/hassfest-passing-brightgreen)](https://developers.home-assistant.io/docs/creating_integration_manifest/)  
 [![MIT License](https://img.shields.io/badge/license-MIT-informational)](LICENSE.md)
 
 > ⚠️ This is a third‑party project, not affiliated with Lepro.
@@ -26,7 +24,7 @@ This custom integration logs in to **Lepro Cloud**, retrieves your lights and st
     speed: 60
     brightness_pct: 80
   ```
-  The strip light also exposes `palette`, `effect_speed` and `direction` attributes.
+  The palette is supplied to Home Assistant; commands still use cloud MQTT. The strip light also exposes `palette`, `effect_speed` and `direction` attributes. Each strip receives one command, but a multi-strip call is not a distributed transaction: a device report or connection failure during the call can leave only some strips updated.
 - `lepro_led.set_segments` service. Effects, brightness (device range 100-1000) and availability follow the device.
 - Local/BLE/LAN control is **not** supported (unproven); see [docs/feature-parity.md](docs/feature-parity.md) for what is implemented, cloud/phone-only, pending or blocked.
 
@@ -37,7 +35,7 @@ This custom integration logs in to **Lepro Cloud**, retrieves your lights and st
 ### Option A — HACS (recommended)
 1. Make sure you have [HACS](https://hacs.xyz/) installed in Home Assistant.
 2. In Home Assistant: **HACS → Integrations → ⋮ (three dots) → Custom repositories**.  
-   Add `https://github.com/Sanji78/lepro_led` as **Category: Integration**.
+   Add `https://github.com/tgmstudios/lepro_led` as **Category: Integration**. The expanded integration is currently on the draft feature branch and is not yet merged into `main`; do not expect the draft features from the default HACS download until they are merged and released.
 3. Find **Lepro LED** in HACS and click **Download**.
 4. **Restart** Home Assistant.
 
@@ -56,9 +54,9 @@ This custom integration logs in to **Lepro Cloud**, retrieves your lights and st
 4. On success, entities will be created for each device.
 
 ### Entities
-- **Lights**: control on/off, brightness, color temperature, RGB color, effects.
-- **Sensors**: connection status, device model, firmware, MAC, online/offline.
-- **Buttons**: (if applicable, e.g., factory reset or effect presets).
+- **Lights**: strip power, brightness, RGB color and the documented effects; S1-5 also has 25 segment lights. Color temperature is not exposed for S1-5.
+- **Numbers**: effect speed and built-in-effect sensitivity.
+- **Binary sensor**: reported cloud-online status. Model/firmware metadata are not separate sensor entities, and no reset buttons are provided.
 
 > Notes:
 > - Credentials are stored in Home Assistant’s config entries.
@@ -67,7 +65,9 @@ This custom integration logs in to **Lepro Cloud**, retrieves your lights and st
 ---
 
 ## 🧪 Supported versions
-- Home Assistant: **2024.8** or newer (earlier may work, untested).
+- Declared minimum: **2024.11.0**, based on the reauthentication API used by the integration. This minimum has not been runtime-tested.
+- Automated tests: Home Assistant **2026.2.3**, Python **3.13**. Candidate imports and read-only cloud bootstrap also pass on the installed Home Assistant **2026.8.2**, Python **3.14**; this is not a production installation or physical-control test.
+- GitHub HACS/hassfest checks have not reported a result for this draft. No passing CI status is claimed.
 
 ---
 
