@@ -33,8 +33,15 @@ Nothing here has been verified against hardware by this change; encodings marked
 ## Transport / lifecycle fixes in this change
 - MQTT: reconnect loop with backoff; **subscriptions re-established on every connect** (was lost after the first drop); state re-requested for every device on reconnect; publishes wait (10 s) for a connection then fail with an error surfaced to the caller; no unbounded pending queue; one `stop()` disconnects exactly once; unload actually tears the client down (the old `light.async_unload_entry` was never called).
 - Setup: auth failure -> `ConfigEntryAuthFailed` (reauth flow); network/API/empty device list/MQTT timeout -> `ConfigEntryNotReady`.
-- State is read from `entry.runtime_data`, not `hass.data` polling; entity writes happen after a confirmed publish and are rolled back on failure; device reports are authoritative. Malformed or partial payloads leave existing state unchanged.
+- State is read from `entry.runtime_data`, not `hass.data` polling; commands are built from a copy of the state and published to the broker under a per-device lock; local values are committed only after the publish succeeds and never overwrite fields a device report touched meanwhile (a failed publish changes nothing, so no rollback can discard racing reports). "Published to broker" is not device confirmation: committed fields stay pending (`LeproRuntime.pending_confirmation`) until the device reports them on `le/<did>/prp/rpt` or `getr`. Our own `set` topic echo and `setr` acks (format not observed) are ignored; only exact 4-segment `rpt`/`getr` topics with valid data count as device reports. Full device-ack semantics (desired vs reported) are still unverified. Malformed or partial payloads leave existing state unchanged.
 - Config: `region` field (default `na`; migration adds `na` to existing entries), unique id `account_region`, credentials validated in the config flow.
 - Removed the hard-coded third-party FCM token; each install gets a random token stored in the entry. **Not live-tested** - if the cloud rejects unknown FCM values for an existing account, login will fail and needs a live check before deploy.
 - Not changed: TLS policy (CA + client cert + bundled `client_key.pem`, `ssl.create_default_context()`), login fields, topics, and unique IDs `<did>`, `<did>_speed`, `<did>_sensitivity`, `<did>_segment_NN`. New: `<did>_online`.
 - `/statistic/record` telemetry is not called.
+
+## Foundation fixes after independent review
+- API: login/profile/family/device-list payloads are type-validated; schema-broken or non-JSON responses raise `LeproApiError` (setup -> retry, config flow -> `cannot_connect`); only an explicit non-zero `code` or HTTP 401/403 raises `LeproAuthError`. Server `msg` is never echoed.
+- Migration: legacy entries without `unique_id` get `account.lower()_region`; if another entry already owns it, the legacy entry is left unchanged (no merge, no credential overwrite). The config flow also aborts if a legacy entry with no unique id matches account+region.
+- `hacs.json` minimum is now HA 2024.11.0 (`_get_reauth_entry`). This is from API inspection; tests only ran on HA 2026.2.3 (suite) and 2026.8.2 (import check), not on 2024.11.
+- Transport exposes `async_wait_connected(timeout)`; setup no longer touches a private attribute.
+- Parity is not complete; see the pending rows above.

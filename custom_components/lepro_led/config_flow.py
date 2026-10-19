@@ -15,6 +15,7 @@ from .const import (
     CONF_REGION,
     DEFAULT_REGION,
     DOMAIN,
+    canonical_unique_id,
 )
 
 REGION_OPTIONS = [
@@ -57,8 +58,18 @@ class LeproLedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input=None):
         errors = {}
         if user_input is not None:
-            await self.async_set_unique_id(f"{user_input[CONF_ACCOUNT].lower()}_{user_input.get(CONF_REGION, DEFAULT_REGION)}")
+            account = user_input[CONF_ACCOUNT]
+            region = user_input.get(CONF_REGION, DEFAULT_REGION)
+            await self.async_set_unique_id(canonical_unique_id(account, region))
             self._abort_if_unique_id_configured()
+            # legacy entries may have no unique_id yet (migration is not guaranteed to have run)
+            if any(
+                e.unique_id is None
+                and str(e.data.get(CONF_ACCOUNT, "")).lower() == account.lower()
+                and e.data.get(CONF_REGION, DEFAULT_REGION) == region
+                for e in self._async_current_entries(include_ignore=False)
+            ):
+                return self.async_abort(reason="already_configured")
             err = await _validate(self.hass, user_input)
             if err is None:
                 data = {**user_input, CONF_MAC: make_mac(user_input[CONF_ACCOUNT]), CONF_FCM: make_fcm_token()}

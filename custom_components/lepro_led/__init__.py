@@ -1,7 +1,6 @@
 """Lepro LED integration."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import os
@@ -25,6 +24,7 @@ from .const import (
     DEFAULT_REGION,
     DOMAIN,
     SERVICE_SET_SEGMENTS,
+    canonical_unique_id,
 )
 from .runtime import LeproRuntime
 from .transport_mqtt import CloudMqttTransport
@@ -55,7 +55,15 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.version == 1 and entry.minor_version < 2:
         data = {**entry.data}
         data.setdefault(CONF_REGION, DEFAULT_REGION)
-        hass.config_entries.async_update_entry(entry, data=data, minor_version=2)
+        kwargs = {}
+        if entry.unique_id is None and isinstance(data.get(CONF_ACCOUNT), str):
+            uid = canonical_unique_id(data[CONF_ACCOUNT], data[CONF_REGION])
+            if any(e.entry_id != entry.entry_id and e.unique_id == uid for e in hass.config_entries.async_entries(DOMAIN)):
+                # never merge/steal: leave this entry as-is (no unique_id) and let the user remove one
+                _LOGGER.warning("Another Lepro entry already uses the same account/region; leaving this legacy entry without a unique id")
+            else:
+                kwargs["unique_id"] = uid
+        hass.config_entries.async_update_entry(entry, data=data, minor_version=2, **kwargs)
     return True
 
 
@@ -116,11 +124,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: LeproConfigEntry) -> boo
     )
     entry.runtime_data = runtime
     await runtime.transport.start()
-    try:
-        await asyncio.wait_for(runtime.transport._connected.wait(), 15)
-    except TimeoutError:
+    if not await runtime.transport.async_wait_connected(15):
         await runtime.async_shutdown()
-        raise ConfigEntryNotReady("MQTT broker not reachable") from None
+        raise ConfigEntryNotReady("MQTT broker not reachable")
 
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

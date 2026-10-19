@@ -23,12 +23,11 @@ class FakeTransport:
     def __init__(self, host, port, ssl_ctx, client_id, topics, on_message, on_status, **kw):
         self.topics, self.on_message, self.on_status = topics, on_message, on_status
         self.client_id = client_id
-        self._connected = type("E", (), {"wait": staticmethod(self._w)})()
         self.connected = False
         self.sent, self.stopped = [], 0
         FakeTransport.instances.append(self)
 
-    async def _w(self):
+    async def async_wait_connected(self, timeout):
         return True
 
     async def start(self):
@@ -240,3 +239,77 @@ async def test_config_flow_validates_and_dedupes(hass):
         r2 = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
         r2 = await hass.config_entries.flow.async_configure(r2["flow_id"], {"account": "N@x.y", "password": "w", "region": "na", "language": "en"})
         assert r2["type"] == "abort"
+
+
+@pytest.mark.parametrize("body,state", [
+    ([1], ConfigEntryState.SETUP_RETRY),
+    ({"code": 0, "data": [1]}, ConfigEntryState.SETUP_RETRY),
+    ({"code": 1, "msg": "no"}, ConfigEntryState.SETUP_ERROR),
+])
+async def test_malformed_login_maps_to_not_ready_and_rejection_to_auth(hass, aioclient_mock, body, state):
+    e = entry()
+    e.add_to_hass(hass)
+    aioclient_mock.post("https://api-na-iot.lepro.com/user/login", json=body)
+    assert not await hass.config_entries.async_setup(e.entry_id)
+    assert e.state is state
+
+
+async def test_config_flow_malformed_login_is_cannot_connect(hass, aioclient_mock):
+    aioclient_mock.post("https://api-na-iot.lepro.com/user/login", json=[1])
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {"account": "m@x.y", "password": "w", "region": "na", "language": "en"})
+    assert r["type"] == "form" and r["errors"] == {"base": "cannot_connect"}
+
+
+async def test_migration_sets_canonical_unique_id_for_legacy_entry(hass, fake_cloud):
+    e = MockConfigEntry(domain=DOMAIN, data={"account": "A@B.c", "password": "pw"}, version=1, minor_version=1, unique_id=None)
+    e.add_to_hass(hass)
+    await hass.config_entries.async_setup(e.entry_id)
+    await hass.async_block_till_done()
+    assert e.unique_id == "a@b.c_na" and e.data["region"] == "na"
+
+
+async def test_migration_keeps_existing_unique_id(hass, fake_cloud):
+    e = MockConfigEntry(domain=DOMAIN, data={"account": "a@b.c", "password": "pw"}, version=1, minor_version=1, unique_id="custom")
+    e.add_to_hass(hass)
+    await hass.config_entries.async_setup(e.entry_id)
+    await hass.async_block_till_done()
+    assert e.unique_id == "custom"
+
+
+async def test_migration_collision_does_not_merge_or_steal_unique_id(hass, fake_cloud):
+    owner = MockConfigEntry(domain=DOMAIN, data={"account": "a@b.c", "password": "OWNER", "region": "na"}, version=1, minor_version=2, unique_id="a@b.c_na")
+    owner.add_to_hass(hass)
+    legacy = MockConfigEntry(domain=DOMAIN, data={"account": "A@b.c", "password": "LEGACY"}, version=1, minor_version=1, unique_id=None)
+    legacy.add_to_hass(hass)
+    from custom_components.lepro_led import async_migrate_entry
+    assert await async_migrate_entry(hass, legacy)
+    assert owner.unique_id == "a@b.c_na" and owner.data["password"] == "OWNER"
+    assert legacy.unique_id is None and legacy.data["password"] == "LEGACY"
+    assert legacy.data["region"] == "na" and legacy.minor_version == 2
+
+
+async def test_config_flow_aborts_for_existing_legacy_entry_without_unique_id(hass):
+    legacy = MockConfigEntry(domain=DOMAIN, data={"account": "N@x.y", "password": "pw"}, version=1, minor_version=2, unique_id=None)
+    legacy.add_to_hass(hass)
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {"account": "n@x.y", "password": "w", "region": "na", "language": "en"})
+    assert r["type"] == "abort" and r["reason"] == "already_configured"
+
+
+async def test_config_flow_same_account_other_region_allowed(hass):
+    async def ok(self):
+        return "tok"
+
+    e = MockConfigEntry(domain=DOMAIN, data={"account": "n@x.y", "password": "pw", "region": "eu"}, version=1, minor_version=2, unique_id="n@x.y_eu")
+    e.add_to_hass(hass)
+    with patch("custom_components.lepro_led.config_flow.LeproApi.login", ok):
+        r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+        r = await hass.config_entries.flow.async_configure(r["flow_id"], {"account": "n@x.y", "password": "w", "region": "na", "language": "en"})
+    assert r["type"] == "create_entry"
+
+
+def test_hacs_minimum_covers_reauth_api():
+    import json, pathlib
+    v = json.loads((pathlib.Path(__file__).parents[1] / "hacs.json").read_text())["homeassistant"]
+    assert tuple(int(x) for x in v.split(".")) >= (2024, 11, 0)  # _get_reauth_entry / async_update_reload_and_abort

@@ -56,6 +56,14 @@ class CloudMqttTransport:
     def connected(self) -> bool:
         return self._connected.is_set()
 
+    async def async_wait_connected(self, timeout: float) -> bool:
+        """Wait up to `timeout` seconds for a broker connection; True if connected."""
+        try:
+            await asyncio.wait_for(self._connected.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
+
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
@@ -109,10 +117,8 @@ class CloudMqttTransport:
     async def publish(self, topic: str, payload: str) -> None:
         if self._stopped or self._task is None:
             raise TransportNotConnected("transport stopped")
-        try:
-            await asyncio.wait_for(self._connected.wait(), self._publish_timeout)
-        except TimeoutError as err:
-            raise TransportNotConnected("MQTT broker not connected") from err
+        if not await self.async_wait_connected(self._publish_timeout):
+            raise TransportNotConnected("MQTT broker not connected")
         client = self._client
         if client is None:
             raise TransportNotConnected("MQTT broker not connected")

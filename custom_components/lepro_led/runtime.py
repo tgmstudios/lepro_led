@@ -18,7 +18,9 @@ from .transport_mqtt import TransportError
 _LOGGER = logging.getLogger(__name__)
 
 STATE_KEYS = ["d1", "d2", "d3", "d4", "d5", "d30", "d50", "d52", "d60", "online"]
-REPORT_TOPICS = {"rpt", "getr", "set"}  # "set" kept for legacy behaviour (device-side echo)
+# Only topics that carry device-originated state. "set" is our own outgoing command topic (the broker
+# would echo it back to us) and "setr" acks have no verified format, so neither confirms anything.
+REPORT_TOPICS = frozenset({"rpt", "getr"})
 
 
 @dataclass
@@ -27,6 +29,10 @@ class DeviceCtx:
     info: dict
     state: DeviceState = field(default_factory=DeviceState)
     listeners: list = field(default_factory=list)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # serialises commands per device
+    report_seq: int = 0  # bumped for every applied device report
+    field_seq: dict = field(default_factory=dict)  # state attribute -> report_seq that last wrote it
+    pending: set = field(default_factory=set)  # published to broker, not yet reported back by the device
 
     def __post_init__(self):
         seed = {k: self.info[k] for k in ("d2", "d50", "d52", "d60") if k in self.info}
@@ -69,7 +75,7 @@ class LeproRuntime:
     # ---- inbound -----------------------------------------------------------
     def handle_message(self, topic: str, payload: bytes) -> None:
         parts = topic.split("/")
-        if len(parts) < 4 or parts[0] != "le" or parts[2] != "prp" or parts[3] not in REPORT_TOPICS:
+        if len(parts) != 4 or parts[0] != "le" or parts[2] != "prp" or parts[3] not in REPORT_TOPICS:
             return
         ctx = self.devices.get(parts[1])
         if ctx is None:
@@ -83,7 +89,15 @@ class LeproRuntime:
         if not isinstance(data, dict):
             return
         if ctx.state.apply_report(data):
+            ctx.report_seq += 1
+            for name in ctx.state.touched:
+                ctx.field_seq[name] = ctx.report_seq
+            ctx.pending -= ctx.state.touched  # the device itself reported these fields
             self._notify(ctx.did)
+
+    def pending_confirmation(self, did: str) -> frozenset:
+        """State fields published to the broker but not yet reported back by the device."""
+        return frozenset(self.devices[did].pending)
 
     def handle_status(self, up: bool) -> None:
         if up:
@@ -108,23 +122,36 @@ class LeproRuntime:
             _LOGGER.debug("state request for %s failed: %s", did, err)
 
     async def send(self, did: str, build: Callable[[DeviceState], dict | None]) -> None:
-        """Apply `build` to the device state, publish the DP map, roll back on failure."""
+        """Build a DP map from a copy of the state, publish it, then commit the local desired values.
+
+        The authoritative state is never mutated before the publish, so a failed publish needs no
+        rollback and cannot discard device reports that arrive meanwhile. After a successful publish
+        only fields the command changed *and* no device report touched during the publish are
+        committed; those are marked pending until the device reports them. Success means
+        "published to the broker", not "device applied it".
+        """
         ctx = self.devices[did]
-        snapshot = copy.deepcopy(ctx.state)
-        try:
-            dps = build(ctx.state)
-        except ValueError as err:
-            ctx.state = snapshot
-            raise HomeAssistantError(str(err)) from err
-        try:
+        async with ctx.lock:
+            desired = copy.deepcopy(ctx.state)
+            try:
+                dps = build(desired)
+            except ValueError as err:
+                raise HomeAssistantError(str(err)) from err
+            current = vars(ctx.state)
+            changed = {k for k, v in vars(desired).items() if k != "touched" and current.get(k) != v}
+            seq = ctx.report_seq
             if dps:
-                await self._publish(
-                    did, "set", {"id": random.randint(0, 1_000_000_000), "t": int(time.time()), "d": dps}
-                )
-        except TransportError as err:
-            ctx.state = snapshot
-            self._notify(did)
-            raise HomeAssistantError(f"Lepro device {did} unreachable: {err}") from err
+                try:
+                    await self._publish(
+                        did, "set", {"id": random.randint(0, 1_000_000_000), "t": int(time.time()), "d": dps}
+                    )
+                except TransportError as err:
+                    raise HomeAssistantError(f"Lepro device {did} unreachable: {err}") from err
+            committed = {k for k in changed if ctx.field_seq.get(k, 0) <= seq}
+            for k in committed:
+                setattr(ctx.state, k, getattr(desired, k))
+            if dps:
+                ctx.pending |= committed
         self._notify(did)
 
     # ---- lifecycle -----------------------------------------------------------
@@ -133,4 +160,4 @@ class LeproRuntime:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         if self.transport is not None:
-            await self.transport.stop() if hasattr(self.transport, "stop") else None
+            await self.transport.stop()

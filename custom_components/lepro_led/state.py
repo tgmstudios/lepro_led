@@ -24,6 +24,7 @@ class DeviceState:
         self.speed: float = 50
         self.sensitivity: float = 50
         self.online: bool | None = None
+        self.touched: set[str] = set()  # attribute names written by the last apply_report
 
     # ---- derived ---------------------------------------------------------
     @property
@@ -40,34 +41,43 @@ class DeviceState:
     def apply_report(self, data: dict) -> bool:
         """Merge a device report. Returns True if any known key was present. Malformed values are ignored."""
         changed = False
+        self.touched = touched = set()
         if "d1" in data and data["d1"] in (0, 1, True, False):
             self.on = bool(data["d1"])
+            touched.add("on")
             changed = True
         if "d2" in data and isinstance(data["d2"], int) and not isinstance(data["d2"], bool):
             self.mode = data["d2"]
+            touched.add("mode")
             changed = True
         if "d52" in data:
             b = p.d52_to_ha(data["d52"])
             if b is not None:
                 self.brightness = b
+                touched.add("brightness")
                 changed = True
         if "d50" in data:
             parsed = p.parse_d50(data["d50"])
             if parsed is not None:
                 self.colors = parsed.colors
                 self.d50_effect = parsed.effect
+                touched.update(("colors", "d50_effect"))
                 if parsed.effect != "solid":  # solid carries no speed; keep the last one
                     self.speed = parsed.speed
+                    touched.add("speed")
                 changed = True
         if "d60" in data:
             parsed60 = p.parse_d60(data["d60"])
             if parsed60 is not None:
                 self.sensitivity = parsed60[0]
+                touched.add("sensitivity")
                 if parsed60[1]:
                     self.d60_effect = parsed60[1]
+                    touched.add("d60_effect")
                 changed = True
         if "online" in data and data["online"] in (0, 1, True, False):
             self.online = bool(data["online"])
+            touched.add("online")
             changed = True
         return changed
 

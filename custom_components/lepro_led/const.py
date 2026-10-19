@@ -23,3 +23,7 @@ CONF_MAC = "persistent_mac"
 CONF_FCM = "fcm_token"
 
 SERVICE_SET_SEGMENTS = "set_segments"
+
+
+def canonical_unique_id(account: str, region: str) -> str:
+    return f"{account.lower()}_{region}"

@@ -205,3 +205,12 @@ async def test_callback_exception_does_not_kill_loop():
     await _wait(lambda: len(got) == 2)
     assert t.connected
     await t.stop()
+
+
+async def test_async_wait_connected_public_api():
+    b = FakeBroker()
+    t, _, _ = make(b)
+    assert await t.async_wait_connected(0.01) is False
+    await t.start()
+    assert await t.async_wait_connected(1) is True
+    await t.stop()
