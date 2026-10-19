@@ -313,3 +313,184 @@ def test_hacs_minimum_covers_reauth_api():
     import json, pathlib
     v = json.loads((pathlib.Path(__file__).parents[1] / "hacs.json").read_text())["homeassistant"]
     assert tuple(int(x) for x in v.split(".")) >= (2024, 11, 0)  # _get_reauth_entry / async_update_reload_and_abort
+
+
+# ---- set_scene ---------------------------------------------------------------
+async def _setup(hass, fake_cloud):
+    e = entry()
+    e.add_to_hass(hass)
+    await hass.config_entries.async_setup(e.entry_id)
+    await hass.async_block_till_done()
+    return e, fake_cloud.instances[0], er.async_get(hass)
+
+
+def _sets(t):
+    return [b for topic, b in t.sent if topic.endswith("/set")]
+
+
+async def test_set_scene_single_atomic_publish_and_state(hass, fake_cloud):
+    _, t, reg = await _setup(hass, fake_cloud)
+    eid = reg.async_get_entity_id("light", DOMAIN, "1000001")
+    n = len(_sets(t))
+    await hass.services.async_call(DOMAIN, "set_scene", {"entity_id": [eid], "effect": "gradient", "colors": [[255, 0, 0], [0, 0, 255]], "speed": 70, "brightness_pct": 50}, blocking=True)
+    sent = _sets(t)
+    assert len(sent) == n + 1
+    cols = [(255, 0, 0)] * 13 + [(0, 0, 255)] * 12
+    assert sent[-1]["d"] == {"d1": 1, "d2": 2, "d50": p.build_d50(cols, "gradient", 70), "d52": p.ha_to_d52(128)}
+    st = hass.states.get(eid)
+    assert st.attributes["effect"] == "gradient" and st.attributes["palette"] == [[255, 0, 0], [0, 0, 255]]
+    assert st.attributes["effect_speed"] == 70 and st.attributes["direction"] is None
+    assert "1000001" not in json.dumps(dict(st.attributes))
+
+
+async def test_set_scene_segment_alias_and_strip_collapse_to_one_send(hass, fake_cloud):
+    _, t, reg = await _setup(hass, fake_cloud)
+    strip = reg.async_get_entity_id("light", DOMAIN, "1000001")
+    seg = reg.async_get_entity_id("light", DOMAIN, "1000001_segment_05")
+    n = len(_sets(t))
+    await hass.services.async_call(DOMAIN, "set_scene", {"entity_id": [strip, seg], "colors": [[1, 2, 3]]}, blocking=True)
+    assert len(_sets(t)) == n + 1
+
+
+async def test_set_scene_multiple_devices_preserves_each_and_other_device(hass, fake_cloud):
+    _, t, reg = await _setup(hass, fake_cloud)
+    a = reg.async_get_entity_id("light", DOMAIN, "1000001")
+    b = reg.async_get_entity_id("light", DOMAIN, "1000002")
+    t.on_message("le/1000001/prp/rpt", json.dumps({"d": {"d2": 2, "d50": p.build_d50([(9, 9, 9)] * 25, "breath", 20)}}).encode())
+    t.on_message("le/1000002/prp/rpt", json.dumps({"d": {"d2": 2, "d50": p.build_d50([(8, 8, 8)] * 25, "circular", 60), "d52": 700}}).encode())
+    await hass.async_block_till_done()
+    n = len(_sets(t))
+    await hass.services.async_call(DOMAIN, "set_scene", {"entity_id": [a], "speed": 90}, blocking=True)
+    assert len(_sets(t)) == n + 1
+    assert _sets(t)[-1]["d"]["d50"] == p.build_d50([(9, 9, 9)] * 25, "breath", 90)
+    assert hass.states.get(b).attributes["effect_speed"] == 60
+    await hass.services.async_call(DOMAIN, "set_scene", {"entity_id": [a, b], "brightness": 10}, blocking=True)
+    new = _sets(t)[n + 1:]
+    assert len(new) == 2 and all(set(x["d"]) == {"d52"} for x in new)
+
+
+async def test_set_scene_direction_inversion(hass, fake_cloud):
+    _, t, reg = await _setup(hass, fake_cloud)
+    eid = reg.async_get_entity_id("light", DOMAIN, "1000001")
+    t.on_message("le/1000001/prp/rpt", json.dumps({"d": {"d2": 2, "d50": p.build_d50([(9, 9, 9)] * 25, "clockwise", 20)}}).encode())
+    await hass.async_block_till_done()
+    assert hass.states.get(eid).attributes["direction"] == "clockwise"
+    await hass.services.async_call(DOMAIN, "set_scene", {"entity_id": [eid], "direction": "counterclockwise"}, blocking=True)
+    assert _sets(t)[-1]["d"]["d50"] == p.build_d50([(9, 9, 9)] * 25, "counterclockwise", 20)
+
+
+async def test_set_scene_rejections_publish_nothing(hass, fake_cloud):
+    from homeassistant.exceptions import HomeAssistantError
+    import voluptuous as vol
+
+    _, t, reg = await _setup(hass, fake_cloud)
+    a = reg.async_get_entity_id("light", DOMAIN, "1000001")
+    n = len(t.sent)
+    bad = [
+        {"entity_id": [a]},
+        {"entity_id": [a], "effect": "flash"},
+        {"entity_id": [a], "effect": "wave_1"},
+        {"entity_id": [a], "brightness": 5, "brightness_pct": 5},
+        {"entity_id": [a], "colors": [[1, 2, 999]]},
+        {"entity_id": [a], "colors": [[1, 2]]},
+        {"entity_id": [a], "colors": [[True, 0, 0]]},
+        {"entity_id": [a], "colors": [[1.5, 0, 0]]},
+        {"entity_id": [a], "colors": []},
+        {"entity_id": [a], "colors": [[1, 1, 1]] * 26},
+        {"entity_id": [a], "speed": float("nan")},
+        {"entity_id": [a], "speed": True},
+        {"entity_id": [a], "speed": 101},
+        {"entity_id": [a], "brightness": True},
+        {"entity_id": [a], "brightness": 0},
+        {"entity_id": [a], "brightness_pct": float("inf")},
+        {"entity_id": [a], "direction": "left"},
+        {"entity_id": [a], "direction": "clockwise"},  # solid is not directional
+        {"entity_id": ["light.does_not_exist"], "speed": 5},
+    ]
+    for data in bad:
+        with pytest.raises((vol.Invalid, HomeAssistantError)):
+            await hass.services.async_call(DOMAIN, "set_scene", data, blocking=True)
+    assert len(t.sent) == n
+
+
+async def test_set_scene_invalid_second_device_blocks_all(hass, fake_cloud):
+    from homeassistant.exceptions import HomeAssistantError
+
+    _, t, reg = await _setup(hass, fake_cloud)
+    a = reg.async_get_entity_id("light", DOMAIN, "1000001")
+    b = reg.async_get_entity_id("light", DOMAIN, "1000002")
+    t.on_message("le/1000002/prp/rpt", json.dumps({"d": {"d2": 3}}).encode())  # B in music mode
+    await hass.async_block_till_done()
+    n = len(t.sent)
+    with pytest.raises(HomeAssistantError, match="music"):
+        await hass.services.async_call(DOMAIN, "set_scene", {"entity_id": [a, b], "colors": [[1, 2, 3]]}, blocking=True)
+    assert len(t.sent) == n
+
+
+async def test_set_scene_failed_publish_does_not_change_state(hass, fake_cloud):
+    from homeassistant.exceptions import HomeAssistantError
+    from custom_components.lepro_led.transport_mqtt import TransportNotConnected
+
+    _, t, reg = await _setup(hass, fake_cloud)
+    eid = reg.async_get_entity_id("light", DOMAIN, "1000001")
+
+    async def boom(topic, payload):
+        raise TransportNotConnected("down")
+
+    t.publish = boom
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(DOMAIN, "set_scene", {"entity_id": [eid], "colors": [[1, 2, 3]]}, blocking=True)
+    assert hass.states.get(eid).attributes["palette"] == [[255, 255, 255]]
+
+
+async def test_set_scene_marks_pending_until_device_reports(hass, fake_cloud):
+    e, t, reg = await _setup(hass, fake_cloud)
+    eid = reg.async_get_entity_id("light", DOMAIN, "1000001")
+    await hass.services.async_call(DOMAIN, "set_scene", {"entity_id": [eid], "effect": "breath", "speed": 40, "brightness": 100}, blocking=True)
+    rt = e.runtime_data
+    assert {"d50_effect", "speed", "brightness"} <= rt.pending_confirmation("1000001")
+    t.on_message("le/1000001/prp/rpt", json.dumps({"d": {"d52": 300, "d50": p.build_d50([(255, 255, 255)] * 25, "breath", 40)}}).encode())
+    await hass.async_block_till_done()
+    assert not {"brightness", "d50_effect", "speed"} & rt.pending_confirmation("1000001")
+
+
+@pytest.mark.parametrize("first", ["a", "b"])
+async def test_services_survive_until_last_entry_unloaded(hass, fake_cloud, first):
+    from custom_components.lepro_led import LeproApi  # noqa: F401
+
+    devs = {"a@x.y": [DEVICES[0]], "b@x.y": [DEVICES[1]]}
+
+    captured = {}
+    orig_init = LeproApi.__init__
+
+    def init(self, session, region, account, *a, **k):
+        orig_init(self, session, region, account, *a, **k)
+        captured[id(self)] = account
+
+    async def fetch(self):
+        return Session("tok", "u", MqttInfo("h", 8883, "r", "c"), devs[captured[id(self)]], {}), b"r", b"c"
+
+    with patch("custom_components.lepro_led.LeproApi.__init__", init), patch("custom_components.lepro_led.LeproApi.fetch_session", fetch):
+        ea = entry(account="a@x.y")
+        eb = MockConfigEntry(domain=DOMAIN, data={**ea.data, "account": "b@x.y"}, version=1, minor_version=2, unique_id="b@x.y_na")
+        ea.add_to_hass(hass)
+        eb.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(ea.entry_id)
+        await hass.async_block_till_done()
+        assert eb.state is ConfigEntryState.LOADED
+        one, two = (ea, eb) if first == "a" else (eb, ea)
+        assert await hass.config_entries.async_unload(one.entry_id)
+        await hass.async_block_till_done()
+        for svc in ("set_segments", "set_scene"):
+            assert hass.services.has_service(DOMAIN, svc)
+        # remaining entry still works
+        did = "1000002" if two is eb else "1000001"
+        eid = er.async_get(hass).async_get_entity_id("light", DOMAIN, did)
+        t = [i for i in fake_cloud.instances if i.stopped == 0][0]
+        n = len(_sets(t))
+        await hass.services.async_call(DOMAIN, "set_scene", {"entity_id": [eid], "brightness": 20}, blocking=True)
+        assert len(_sets(t)) == n + 1
+        assert await hass.config_entries.async_unload(two.entry_id)
+        await hass.async_block_till_done()
+        for svc in ("set_segments", "set_scene"):
+            assert not hass.services.has_service(DOMAIN, svc)

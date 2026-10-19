@@ -8,6 +8,7 @@ Nothing here has been verified against hardware by this change; encodings marked
 |---|---|---|
 | Power on/off (d1) | Implemented | app `DpSwitchLedValue`; legacy |
 | RGB colour, all segments (d50) | Implemented | legacy-golden, 72 vectors |
+| Scene palette/speed/brightness for the 6 verified DIY effects | Implemented (local palette only) | `lepro_led.set_scene`; cloud scene save/catalog and the 40 builtin config types remain unmapped |
 | Per-segment colour, 25 segments (d50 groups) | Implemented | legacy-golden; `lepro_led.set_segments` service paints 1-25 colours as even blocks |
 | Effects solid/breath/gradient/clockwise/counterclockwise/circular (d2=2, d50) | Implemented | legacy-golden. `none` is **not** added; `solid` stays |
 | Effects flash, wave_1-4, laser_1-4 (d2=3, d60) | Implemented | legacy-golden prefix table `200..208 0064` |

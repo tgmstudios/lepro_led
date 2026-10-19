@@ -1,4 +1,6 @@
 """Pure device-state model: report parsing and command building."""
+import copy
+
 import pytest
 
 from custom_components.lepro_led import protocol as p
@@ -160,3 +162,83 @@ def test_sensitivity_change_sends_only_for_d60_effects():
     assert s.command_sensitivity(20) is None and s.sensitivity == 20
     with pytest.raises(ValueError):
         s.command_sensitivity(-1)
+
+
+# ---- command_scene ---------------------------------------------------------
+GREEN = (0, 255, 0)
+
+
+def _scene_state(effect="solid", speed=30, mode=2):
+    s = fresh()
+    s.apply_report({"d50": p.build_d50([RED] * 25, effect, speed), "d2": mode, "d1": 1, "d52": 500, "d60": p.build_d60("wave_1", 40)})
+    return s
+
+
+def test_scene_full_command_is_single_atomic_payload():
+    s = _scene_state()
+    cmd = s.command_scene(effect="gradient", colors=[RED, BLUE], speed=70, brightness=128)
+    cols = [RED] * 13 + [BLUE] * 12
+    assert cmd == {"d1": 1, "d2": 2, "d50": p.build_d50(cols, "gradient", 70), "d52": p.ha_to_d52(128)}
+    assert (s.d50_effect, s.colors, s.speed, s.brightness) == ("gradient", cols, 70, 128)
+
+
+def test_scene_preserves_unprovided_fields_and_sensitivity():
+    s = _scene_state("breath", 20)
+    sens, d60 = s.sensitivity, s.d60_effect
+    cmd = s.command_scene(colors=[GREEN])
+    assert cmd["d50"] == p.build_d50([GREEN] * 25, "breath", 20)
+    assert (s.sensitivity, s.d60_effect, s.brightness) == (sens, d60, s.brightness) and "d52" not in cmd
+    cmd = s.command_scene(speed=90)
+    assert cmd["d50"] == p.build_d50([GREEN] * 25, "breath", 90)
+
+
+def test_scene_brightness_only_sends_only_d52_and_pct_converted():
+    s = _scene_state()
+    assert s.command_scene(brightness_pct=100) == {"d52": p.ha_to_d52(255)}
+    assert s.command_scene(brightness_pct=1) == {"d52": p.ha_to_d52(3)}
+    assert s.mode == 2 and s.d50_effect == "solid"
+
+
+def test_scene_direction_inversion_and_conflicts():
+    s = _scene_state("clockwise", 40)
+    assert s.direction == "clockwise"
+    cmd = s.command_scene(direction="counterclockwise")
+    assert cmd["d50"] == p.build_d50([RED] * 25, "counterclockwise", 40) and s.direction == "counterclockwise"
+    assert s.command_scene(effect="clockwise", direction="clockwise")["d50"].endswith(p.build_d50([RED] * 25, "clockwise", 40)[-20:])
+    with pytest.raises(ValueError):
+        s.command_scene(effect="clockwise", direction="counterclockwise")
+    with pytest.raises(ValueError):
+        s.command_scene(effect="gradient", direction="clockwise")
+    g = _scene_state("gradient")
+    with pytest.raises(ValueError):
+        g.command_scene(direction="clockwise")
+
+
+def test_scene_music_mode_rejects_implicit_d50_but_allows_effect_and_brightness():
+    s = _scene_state(mode=3)
+    before = dict(vars(s))
+    for kw in ({"colors": [RED]}, {"speed": 10}):
+        with pytest.raises(ValueError, match="music"):
+            s.command_scene(**kw)
+    assert vars(s) == before
+    assert s.command_scene(brightness=10) == {"d52": p.ha_to_d52(10)} and s.mode == 3
+    cmd = s.command_scene(effect="circular")
+    assert cmd["d2"] == 2 and s.mode == 2
+
+
+@pytest.mark.parametrize("kw", [
+    {}, {"effect": "flash"}, {"effect": "wave_1"}, {"effect": "Solid"}, {"effect": 3},
+    {"colors": []}, {"colors": [RED] * 26}, {"colors": "red"}, {"colors": [(1, 2)]}, {"colors": [(1, 2, 256)]},
+    {"colors": [(True, 0, 0)]}, {"colors": [(1.5, 0, 0)]}, {"colors": [(-1, 0, 0)]},
+    {"speed": -1}, {"speed": 101}, {"speed": True}, {"speed": float("nan")}, {"speed": float("inf")}, {"speed": "5"},
+    {"brightness": 0}, {"brightness": 256}, {"brightness": True}, {"brightness": 1.5}, {"brightness": float("nan")},
+    {"brightness_pct": 0}, {"brightness_pct": 101}, {"brightness_pct": float("nan")}, {"brightness_pct": True},
+    {"brightness": 5, "brightness_pct": 5}, {"direction": "left"},
+    {"effect": "gradient", "colors": [RED], "speed": 5, "brightness": 999},  # late failure must not leave partial mutation
+])
+def test_scene_invalid_input_rejected_before_mutation(kw):
+    s = _scene_state()
+    before = copy.deepcopy(vars(s))
+    with pytest.raises(ValueError):
+        s.command_scene(**kw)
+    assert vars(s) == before

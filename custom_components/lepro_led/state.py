@@ -1,6 +1,8 @@
 """Per-device state model and DP command builders (no Home Assistant imports)."""
 from __future__ import annotations
 
+import math
+
 from . import protocol as p
 
 WHITE = (255, 255, 255)
@@ -11,6 +13,14 @@ def _check_rgb(c):
     if len(c) != 3 or any(not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 255 for v in c):
         raise ValueError(f"invalid RGB colour {c!r}")
     return tuple(c)
+
+
+DIRECTIONAL = {"clockwise": "clockwise", "counterclockwise": "counterclockwise"}
+SCENE_EFFECTS = p.D50_EFFECTS  # only the six verified DIY (d50) effects
+
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
 class DeviceState:
@@ -32,6 +42,20 @@ class DeviceState:
         if self.mode == 3:
             return self.d60_effect or "flash"
         return self.d50_effect
+
+    @property
+    def direction(self) -> str | None:
+        """Rotation direction of the current d50 effect (verified types 4/3), else None."""
+        return self.d50_effect if self.d50_effect in DIRECTIONAL and self.mode != 3 else None
+
+    @property
+    def palette(self) -> list:
+        """Distinct colours of the d50 segment string, in order."""
+        out: list = []
+        for c in self.colors:
+            if not out or out[-1] != c:
+                out.append(c)
+        return out
 
     @property
     def rgb(self):
@@ -159,3 +183,69 @@ class DeviceState:
         if self.mode != 3 or self.d60_effect is None:
             return None
         return {"d2": 3, "d60": p.build_d60(self.d60_effect, value)}
+
+    def command_scene(self, effect=None, colors=None, speed=None, brightness=None, brightness_pct=None, direction=None) -> dict:
+        """Atomic scene: optional d50 effect/palette/speed/direction plus optional brightness in ONE command.
+
+        All input is validated before any attribute is touched. Unprovided fields, sensitivity and the
+        d60 music settings are preserved. While in music mode (d2=3) a d50 change needs an explicit
+        ``effect`` (no silent fallback to an old palette); a brightness-only scene is still allowed.
+        """
+        if all(v is None for v in (effect, colors, speed, brightness, brightness_pct, direction)):
+            raise ValueError("provide at least one of effect, colors, speed, brightness, brightness_pct, direction")
+        if brightness is not None and brightness_pct is not None:
+            raise ValueError("use either brightness or brightness_pct, not both")
+        if effect is not None and effect not in SCENE_EFFECTS:
+            raise ValueError(f"effect must be one of {', '.join(SCENE_EFFECTS)}")
+        if direction is not None and direction not in DIRECTIONAL:
+            raise ValueError("direction must be clockwise or counterclockwise")
+        new_colors = None
+        if colors is not None:
+            if isinstance(colors, (str, bytes)) or not hasattr(colors, "__len__"):
+                raise ValueError("colors must be a list of RGB colours")
+            if not 1 <= len(colors) <= p.SEGMENTS:
+                raise ValueError("provide 1..25 colours")
+            cols = [_check_rgb(c) for c in colors]
+            base, extra = divmod(p.SEGMENTS, len(cols))
+            new_colors = []
+            for i, c in enumerate(cols):
+                new_colors.extend([c] * (base + (1 if i < extra else 0)))
+        if speed is not None and (not _is_number(speed) or not 0 <= speed <= 100):
+            raise ValueError("speed must be 0..100")
+        bri = None
+        if brightness is not None:
+            if not isinstance(brightness, int) or isinstance(brightness, bool) or not 1 <= brightness <= 255:
+                raise ValueError("brightness must be an integer 1..255")
+            bri = brightness
+        if brightness_pct is not None:
+            if not _is_number(brightness_pct) or not 1 <= brightness_pct <= 100:
+                raise ValueError("brightness_pct must be 1..100")
+            bri = max(1, min(255, round(brightness_pct * 255 / 100)))
+
+        d50_change = any(v is not None for v in (effect, colors, speed, direction))
+        if self.mode == 3 and d50_change and effect is None:
+            raise ValueError("device is in music mode; give an explicit effect to leave it")
+        target = effect if effect is not None else self.d50_effect
+        if direction is not None:
+            if effect is None:
+                if target not in DIRECTIONAL:
+                    raise ValueError("direction only applies to clockwise/counterclockwise effects")
+            elif effect not in DIRECTIONAL:
+                raise ValueError("direction only applies to clockwise/counterclockwise effects")
+            elif effect != direction:
+                raise ValueError(f"direction {direction!r} conflicts with effect {effect!r}")
+            target = direction
+
+        cmd: dict = {}
+        if d50_change:
+            self.d50_effect = target
+            if new_colors is not None:
+                self.colors = new_colors
+            if speed is not None:
+                self.speed = speed
+            cmd = self._d50_payload(power=True)
+            self.on = True
+        if bri is not None:
+            self.brightness = bri
+            cmd["d52"] = p.ha_to_d52(bri)
+        return cmd

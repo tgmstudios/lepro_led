@@ -16,3 +16,53 @@ set_segments:
       example: "[[255,0,0],[0,0,255]]"
       selector:
         object:
+
+set_scene:
+  name: Set scene
+  description: >-
+    Apply one of the six verified DIY effects with a custom colour palette, speed and brightness in a
+    single command. Colours are spread in even blocks over the 25 segments. Fields you leave out keep
+    their current value. A strip in music mode needs an explicit effect. Local palette only; it does
+    not read or save Lepro cloud scenes.
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          integration: lepro_led
+          domain: light
+          multiple: true
+    effect:
+      example: gradient
+      selector:
+        select:
+          options: [solid, breath, gradient, clockwise, counterclockwise, circular]
+    colors:
+      example: "[[255,0,0],[0,0,255]]"
+      selector:
+        object:
+    speed:
+      description: Effect speed 0-100 (stored but not sent for solid).
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+    brightness:
+      description: Brightness 1-255 (not together with brightness_pct).
+      selector:
+        number:
+          min: 1
+          max: 255
+    brightness_pct:
+      description: Brightness 1-100 percent (not together with brightness).
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+    direction:
+      description: Only for clockwise/counterclockwise effects; flips the current directional effect or must match the given effect.
+      selector:
+        select:
+          options: [clockwise, counterclockwise]

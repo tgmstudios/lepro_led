@@ -51,6 +51,11 @@ class LeproLedLight(LeproEntity, LightEntity):
     def effect(self):
         return self.state_obj.effect
 
+    @property
+    def extra_state_attributes(self):
+        s = self.state_obj
+        return {"palette": [list(c) for c in s.palette], "effect_speed": round(s.speed), "direction": s.direction}
+
     async def async_turn_on(self, **kwargs):
         await self._rt.send(
             self._did,

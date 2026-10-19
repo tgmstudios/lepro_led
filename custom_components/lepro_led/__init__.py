@@ -1,7 +1,9 @@
 """Lepro LED integration."""
 from __future__ import annotations
 
+import copy
 import hashlib
+import math
 import logging
 import os
 import ssl
@@ -9,7 +11,7 @@ import ssl
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -23,9 +25,12 @@ from .const import (
     CONF_REGION,
     DEFAULT_REGION,
     DOMAIN,
+    SERVICE_SET_SCENE,
     SERVICE_SET_SEGMENTS,
+    SERVICES,
     canonical_unique_id,
 )
+from .state import SCENE_EFFECTS as SCENE_EFFECT_NAMES
 from .runtime import LeproRuntime
 from .transport_mqtt import CloudMqttTransport
 
@@ -137,7 +142,102 @@ async def async_setup_entry(hass: HomeAssistant, entry: LeproConfigEntry) -> boo
     return True
 
 
+def _strict_int(lo: int, hi: int):
+    def check(v):
+        if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
+            raise vol.Invalid(f"must be an integer {lo}..{hi}")
+        return v
+
+    return check
+
+
+def _strict_number(lo: float, hi: float):
+    def check(v):
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or not lo <= v <= hi:
+            raise vol.Invalid(f"must be a number {lo}..{hi}")
+        return v
+
+    return check
+
+
+_SCENE_FIELDS = ("effect", "colors", "speed", "brightness", "brightness_pct", "direction")
+
+
+def _scene_cross_check(data: dict) -> dict:
+    given = [k for k in _SCENE_FIELDS if k in data]
+    if not given:
+        raise vol.Invalid("provide at least one of " + ", ".join(_SCENE_FIELDS))
+    if "brightness" in data and "brightness_pct" in data:
+        raise vol.Invalid("use either brightness or brightness_pct, not both")
+    return data
+
+
+_STRICT_RGB = vol.All(vol.ExactSequence([_strict_int(0, 255)] * 3), vol.Coerce(tuple))
+SCENE_SCHEMA = vol.All(
+    vol.Schema(
+        {
+            vol.Required("entity_id"): cv.entity_ids,
+            vol.Optional("effect"): vol.In(SCENE_EFFECT_NAMES),
+            vol.Optional("colors"): vol.All(list, [_STRICT_RGB], vol.Length(min=1, max=25)),
+            vol.Optional("speed"): _strict_number(0, 100),
+            vol.Optional("brightness"): _strict_int(1, 255),
+            vol.Optional("brightness_pct"): _strict_number(1, 100),
+            vol.Optional("direction"): vol.In(("clockwise", "counterclockwise")),
+        }
+    ),
+    _scene_cross_check,
+)
+
+
+def _resolve_device(hass: HomeAssistant, entity_id: str):
+    """Map a Lepro light entity (strip or segment) to (runtime, did), or None."""
+    from homeassistant.helpers import entity_registry as er
+
+    ent = er.async_get(hass).async_get(entity_id)
+    if ent is None or ent.platform != DOMAIN or ent.domain != "light" or ent.config_entry_id is None:
+        return None
+    entry = hass.config_entries.async_get_entry(ent.config_entry_id)
+    if entry is None or not hasattr(entry, "runtime_data"):
+        return None
+    did = ent.unique_id.split("_segment_")[0]
+    if did not in entry.runtime_data.devices:
+        return None
+    return entry.runtime_data, did
+
+
 def _register_services(hass: HomeAssistant) -> None:
+    _register_set_segments(hass)
+    _register_set_scene(hass)
+
+
+def _register_set_scene(hass: HomeAssistant) -> None:
+    if hass.services.has_service(DOMAIN, SERVICE_SET_SCENE):
+        return
+
+    async def handle(call: ServiceCall) -> None:
+        targets: dict = {}
+        for entity_id in call.data["entity_id"]:
+            found = _resolve_device(hass, entity_id)
+            if found is None:
+                raise ServiceValidationError(f"{entity_id} is not a loaded Lepro light")
+            rt, did = found
+            targets[(id(rt), did)] = (rt, did)  # strip + its segment lights collapse to one command
+        args = {k: call.data[k] for k in _SCENE_FIELDS if k in call.data}
+        args["colors"] = call.data.get("colors")
+        args = {k: v for k, v in args.items() if v is not None}
+        # dry-run on every device first so one bad device cannot leave the others half-updated
+        for rt, did in targets.values():
+            try:
+                copy.deepcopy(rt.devices[did].state).command_scene(**args)
+            except ValueError as err:
+                raise ServiceValidationError(str(err)) from err
+        for rt, did in targets.values():
+            await rt.send(did, lambda s: s.command_scene(**args))
+
+    hass.services.async_register(DOMAIN, SERVICE_SET_SCENE, handle, schema=SCENE_SCHEMA)
+
+
+def _register_set_segments(hass: HomeAssistant) -> None:
     if hass.services.has_service(DOMAIN, SERVICE_SET_SEGMENTS):
         return
 
@@ -172,5 +272,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: LeproConfigEntry) -> bo
     if ok:
         await entry.runtime_data.async_shutdown()
         if not any(e.entry_id != entry.entry_id and e.state is ConfigEntryState.LOADED for e in hass.config_entries.async_entries(DOMAIN)):
-            hass.services.async_remove(DOMAIN, SERVICE_SET_SEGMENTS)
+            for service in SERVICES:
+                hass.services.async_remove(DOMAIN, service)
     return ok
