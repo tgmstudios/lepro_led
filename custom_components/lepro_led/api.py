@@ -176,15 +176,21 @@ def _parse_scenes(resp, fid: str, did: str) -> list[CloudScene]:
         if isinstance(name, str):
             label = " ".join(name.split())[:_LABEL_MAX] or None
         found.append((scene_id, label, res))
+    bases = [label or f"Scene {scene_id.split('-', 1)[1]}" for scene_id, label, _ in found]
     counts: dict[str, int] = {}
-    for scene_id, label, _ in found:
-        counts[label or scene_id] = counts.get(label or scene_id, 0) + 1
-    scenes, used = [], set()
-    for scene_id, label, res in found:
-        shown = label or f"Scene {scene_id.split('-', 1)[1]}"
-        if counts[label or scene_id] > 1 or shown in used:
-            shown = f"{shown} ({scene_id})"
-        used.add(shown)
+    for base in bases:
+        counts[base] = counts.get(base, 0) + 1
+    taken = {b for b in bases if counts[b] == 1}  # unique names keep their text; others get the scene id
+    scenes = []
+    for (scene_id, _label, res), base in zip(found, bases):
+        shown = base
+        if counts[base] > 1:
+            shown = f"{base} ({scene_id})"
+            n = 1
+            while shown in taken:  # a real name may already look like a suffixed one
+                n += 1
+                shown = f"{base} ({scene_id}) #{n}"
+            taken.add(shown)
         scenes.append(CloudScene(scene_id, shown, res))
     return scenes
 

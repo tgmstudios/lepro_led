@@ -21,6 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 STATE_KEYS = ["d1", "d2", "d3", "d4", "d5", "d30", "d50", "d52", "d60", "online"]
 # Only topics that carry device-originated state. "set" is our own outgoing command topic (the broker
 # would echo it back to us) and "setr" acks have no verified format, so neither confirms anything.
+SCENE_FETCH_CONCURRENCY = 2
 REPORT_TOPICS = frozenset({"rpt", "getr"})
 
 
@@ -50,6 +51,10 @@ class LeproRuntime:
         self.token: str | None = None
         self.scenes: dict[str, dict[str, CloudScene]] = {did: {} for did in self.devices}  # did -> scene_id -> scene
         self._tasks: set[asyncio.Task] = set()
+        self._refreshing: dict[str, asyncio.Task] = {}
+        self._auth_lock = asyncio.Lock()
+        self._scene_sem = asyncio.Semaphore(SCENE_FETCH_CONCURRENCY)
+        self._closed = False
 
     # ---- listeners ---------------------------------------------------------
     def add_listener(self, did: str, cb: Callable[[], None]) -> Callable[[], None]:
@@ -143,6 +148,8 @@ class LeproRuntime:
                 raise HomeAssistantError(str(err)) from err
             current = vars(ctx.state)
             changed = {k for k, v in vars(desired).items() if k != "touched" and current.get(k) != v}
+            if dps and "d50" in dps:
+                changed.add("d50_str")  # a d50 command is always a claim, even if the cached value already matches
             seq = ctx.report_seq
             if dps:
                 try:
@@ -163,23 +170,73 @@ class LeproRuntime:
         ctx = self.devices[did]
         self.scenes[did] = {sc.scene_id: sc for sc in scenes}
         ctx.state.cloud_scenes = {sc.d50: sc.label for sc in scenes}
+        ctx.state.reevaluate_cloud()
         self._notify(did)
 
     async def refresh_scenes(self, did: str) -> int:
-        """Read the strip's cloud scenes (GET only). Raises LeproApiError; keeps the old catalog on failure."""
+        """Read the strip's cloud scenes (GET only). Raises LeproApiError; keeps the old catalog on failure.
+
+        Calls for the same strip share one in-flight fetch. The fetch runs as a tracked task so
+        closing the runtime cancels it; waiting callers then get a LeproApiError.
+        """
+        if self._closed:
+            raise LeproApiError("cloud scene catalog unavailable")
+        task = self._refreshing.get(did)
+        if task is None:
+            task = asyncio.get_running_loop().create_task(self._refresh_scenes(did))
+            self._refreshing[did] = task
+            self._tasks.add(task)
+
+            def done(t, did=did):
+                self._tasks.discard(t)
+                if self._refreshing.get(did) is t:
+                    del self._refreshing[did]
+                if not t.cancelled():
+                    t.exception()  # consumed here; callers re-raise from their own await
+
+            task.add_done_callback(done)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():  # the fetch was cancelled with the runtime, not this caller
+                raise LeproApiError("cloud scene catalog unavailable") from None
+            raise
+
+    async def refresh_all_scenes(self) -> dict:
+        """Refresh every strip (at most SCENE_FETCH_CONCURRENCY at a time). did -> count or LeproApiError."""
+        dids = list(self.devices)
+        out = await asyncio.gather(*(self.refresh_scenes(d) for d in dids), return_exceptions=True)
+        for r in out:
+            if isinstance(r, BaseException) and not isinstance(r, LeproApiError):
+                raise r
+        return dict(zip(dids, out))
+
+    async def _refresh_scenes(self, did: str) -> int:
         fid = self.devices[did].info.get("fid")
         if self.api is None or self.token is None or fid is None:
             raise LeproApiError("cloud scene catalog unavailable")
-        try:
-            scenes = await self.api.fetch_scenes(self.token, fid, did)
-        except LeproAuthError:
-            self.token = await self.api.login()  # token may have expired; one re-login, then retry
-            scenes = await self.api.fetch_scenes(self.token, fid, did)
+        async with self._scene_sem:
+            token = self.token
+            try:
+                scenes = await self.api.fetch_scenes(token, fid, did)
+            except LeproAuthError:
+                token = await self._renew_token(token)  # one re-login (shared), then one retry
+                scenes = await self.api.fetch_scenes(token, fid, did)
         self.set_scenes(did, scenes)
         return len(scenes)
 
+    async def _renew_token(self, stale: str) -> str:
+        """Single-flight re-login: if another caller already replaced the rejected token, reuse theirs."""
+        async with self._auth_lock:
+            if self.token is not None and self.token != stale:
+                return self.token
+            new = await self.api.login()
+            self.token = new
+            return new
+
     # ---- lifecycle -----------------------------------------------------------
     async def async_shutdown(self) -> None:
+        self._closed = True
         for t in list(self._tasks):
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)

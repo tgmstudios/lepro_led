@@ -136,11 +136,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: LeproConfigEntry) -> boo
         await runtime.async_shutdown()
         raise ConfigEntryNotReady("MQTT broker not reachable")
 
-    for did in runtime.devices:  # optional catalog: a failure must never break the basic light integration
-        try:
-            await runtime.refresh_scenes(did)
-        except LeproApiError as err:
-            _LOGGER.debug("cloud scene catalog unavailable: %s", err)
+    # optional catalog: failures (all LeproApiError) must never break the basic light integration
+    for res in (await runtime.refresh_all_scenes()).values():
+        if isinstance(res, LeproApiError):
+            _LOGGER.debug("cloud scene catalog unavailable for a strip: %s", res)
 
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

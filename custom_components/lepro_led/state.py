@@ -36,6 +36,9 @@ class DeviceState:
         self.online: bool | None = None
         self.d50_str: str | None = None  # last d50 string seen/sent
         self.cloud_scenes: dict[str, str] = {}  # server d50 string -> scene label (runtime catalog)
+        # True while d50_str is a server-defined string (known catalog scene, or one that was in the
+        # catalog when seen): local colors/effect/speed are then stale and must not be shown
+        self.cloud_raw: bool = False
         self.touched: set[str] = set()  # attribute names written by the last apply_report
 
     # ---- derived ---------------------------------------------------------
@@ -50,7 +53,7 @@ class DeviceState:
     def effect(self) -> str | None:
         if self.mode == 3:
             return self.d60_effect or "flash"
-        if self.cloud_scene is not None:
+        if self.cloud_raw:
             return None  # server-defined mode: do not claim one of the six local effects
         return self.d50_effect
 
@@ -59,13 +62,13 @@ class DeviceState:
         """Rotation direction of the current d50 effect (verified types 4/3), else None."""
         if self.cloud_scene is not None:
             return None
-        return self.d50_effect if self.d50_effect in DIRECTIONAL and self.mode != 3 else None
+        return self.d50_effect if self.d50_effect in DIRECTIONAL and self.mode != 3 and not self.cloud_raw else None
 
     @property
     def palette(self) -> list:
         """Distinct colours of the d50 segment string, in order."""
         out: list = []
-        if self.cloud_scene is not None:
+        if self.cloud_raw:
             return out
         for c in self.colors:
             if not out or out[-1] != c:
@@ -74,7 +77,30 @@ class DeviceState:
 
     @property
     def rgb(self):
-        return self.colors[0]
+        return None if self.cloud_raw else self.colors[0]
+
+    def reevaluate_cloud(self) -> None:
+        """Re-judge the stored d50 string against the (new) catalog, e.g. after set_scenes.
+
+        Catalog identity beats the generic codec parse. A string that left the catalog is only
+        re-interpreted locally when it provably round-trips through the verified codec; otherwise it
+        stays an opaque server string (all local attributes blank) rather than showing stale values.
+        """
+        d50 = self.d50_str
+        if d50 is None:
+            return
+        if d50 in self.cloud_scenes:
+            self.cloud_raw = True
+        elif self.cloud_raw:
+            parsed = p.parse_d50(d50)
+            try:
+                exact = parsed is not None and p.build_d50(parsed.colors, parsed.effect, parsed.speed) == d50
+            except ValueError:
+                exact = False
+            if exact:
+                self.colors, self.d50_effect, self.cloud_raw = parsed.colors, parsed.effect, False
+                if parsed.effect != "solid":
+                    self.speed = parsed.speed
 
     # ---- inbound ----------------------------------------------------------
     def apply_report(self, data: dict) -> bool:
@@ -97,6 +123,7 @@ class DeviceState:
                 changed = True
         if "d50" in data and isinstance(data["d50"], str) and data["d50"] in self.cloud_scenes:
             self.d50_str = data["d50"]  # exact catalog string: never re-interpret it as a local effect
+            self.cloud_raw = True
             touched.add("d50_str")
             changed = True
         elif "d50" in data:
@@ -105,6 +132,7 @@ class DeviceState:
                 self.colors = parsed.colors
                 self.d50_effect = parsed.effect
                 self.d50_str = data["d50"]
+                self.cloud_raw = False
                 touched.update(("colors", "d50_effect", "d50_str"))
                 if parsed.effect != "solid":  # solid carries no speed; keep the last one
                     self.speed = parsed.speed
@@ -129,6 +157,7 @@ class DeviceState:
     def _d50_payload(self, power: bool) -> dict:
         cmd = {"d2": 2, "d50": p.build_d50(self.colors, self.d50_effect, self.speed)}
         self.d50_str = cmd["d50"]
+        self.cloud_raw = False
         if power:
             cmd = {"d1": 1, **cmd}
         self.mode = 2
@@ -287,7 +316,7 @@ class DeviceState:
                 raise ValueError("brightness_pct must be 1..100")
             bri = max(1, min(255, round(brightness_pct * 255 / 100)))
         cmd = {"d1": 1, "d2": 2, "d50": d50}
-        self.on, self.mode, self.d50_str = True, 2, d50
+        self.on, self.mode, self.d50_str, self.cloud_raw = True, 2, d50, True
         if bri is not None:
             self.brightness = bri
             cmd["d52"] = p.ha_to_d52(bri)

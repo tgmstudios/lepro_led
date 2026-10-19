@@ -265,3 +265,92 @@ async def test_unload_removes_services_and_select(hass, cloud):
     await hass.async_block_till_done()
     assert not hass.services.has_service(DOMAIN, "apply_cloud_scene")
     assert hass.states.get(reg.async_get_entity_id("select", DOMAIN, "1000001_cloud_scene")).state == "unavailable"
+
+
+# ---- unique labels -------------------------------------------------------------
+ADVERSARIAL = [(9, "foo (cid-2)"), (1, "foo"), (2, "foo")]
+
+
+def test_adversarial_labels_unique_and_ids_stable():
+    rows = [row(c, n, f"N01:P10001AA00BB{c:02d}F210001FFFFU3VFAKE{c:04d};") for c, n in ADVERSARIAL]
+    sc = _parse_scenes(resp(rows), "77", "1000001")
+    labels = [s.label for s in sc]
+    assert len(set(labels)) == 3 and [s.scene_id for s in sc] == ["cid-9", "cid-1", "cid-2"]
+    assert all(l == l.strip() and len(l) <= 80 for l in labels)
+    again = _parse_scenes(resp(rows), "77", "1000001")
+    assert [s.label for s in again] == labels  # deterministic
+    # a real name is never displaced by a generated suffix of another row
+    assert labels[0] == "foo (cid-2)"
+    # ids never serialise labels
+    assert not any(s.scene_id.startswith("foo") for s in sc)
+
+
+def test_label_uniqueness_with_generated_default_names():
+    rows = [row(7, "Scene 8"), row(8, None, RES_B)]  # explicit name equals generated default of cid-8
+    sc = _parse_scenes(resp(rows), "77", "1000001")
+    assert len({s.label for s in sc}) == 2
+
+
+async def test_select_chooses_right_scene_id_for_adversarial_labels(hass, fake_cloud):
+    sess = Session("tok", "u1", MqttInfo("h", 8883, "r", "c"), FDEV, {})
+    rows = [row(c, n, f"N01:P10001AA00BB{c:02d}F210001FFFFU3VFAKE{c:04d};") for c, n in ADVERSARIAL]
+    parsed = _parse_scenes(resp(rows), "77", "1000001")
+
+    async def fetch(self):
+        return sess, b"r", b"c"
+
+    async def scenes(self, token, fid, did):
+        return parsed if str(did) == "1000001" else []
+
+    with patch("custom_components.lepro_led.LeproApi.fetch_session", fetch), patch("custom_components.lepro_led.LeproApi.fetch_scenes", scenes):
+        e, t, reg = await _setup(hass, fake_cloud)
+    sel = reg.async_get_entity_id("select", DOMAIN, "1000001_cloud_scene")
+    opts = hass.states.get(sel).attributes["options"]
+    assert len(set(opts)) == 3
+    ids = hass.states.get(sel).attributes["scene_ids"]
+    for s in parsed:
+        n = len(_sets(t))
+        await hass.services.async_call("select", "select_option", {"entity_id": sel, "option": s.label}, blocking=True)
+        assert _sets(t)[n]["d"]["d50"] == s.d50 and ids[s.label] == s.scene_id
+
+
+async def test_refresh_service_reauths_and_failures_are_ha_errors_without_secrets(hass, cloud):
+    from custom_components.lepro_led.api import LeproAuthError
+    e, t, reg = await _setup(hass, cloud)
+    rt = e.runtime_data
+    sel = reg.async_get_entity_id("select", DOMAIN, "1000001_cloud_scene")
+    light = reg.async_get_entity_id("light", DOMAIN, "1000001")
+    calls = []
+
+    async def fetch(self, token, fid, did):
+        calls.append(token)
+        if token == "tok":
+            raise LeproAuthError("HTTP 401")
+        return [CloudScene("cid-9", "Fresh", RES_B)]
+
+    with patch("custom_components.lepro_led.LeproApi.fetch_scenes", fetch), \
+         patch("custom_components.lepro_led.LeproApi.login", AsyncMock(return_value="tok2")):
+        await hass.services.async_call(DOMAIN, "refresh_cloud_scenes", {"entity_id": [light]}, blocking=True)
+    assert calls == ["tok", "tok2"] and rt.token == "tok2"
+    assert hass.states.get(sel).attributes["options"] == ["Fresh"]
+    # relogin rejected: service error, old catalog kept, no secret in the message
+    rt.token = "tok-old-secret"
+    with patch("custom_components.lepro_led.LeproApi.fetch_scenes", AsyncMock(side_effect=LeproAuthError("HTTP 401"))), \
+         patch("custom_components.lepro_led.LeproApi.login", AsyncMock(side_effect=LeproAuthError("login rejected (code 1)"))):
+        with pytest.raises(HomeAssistantError) as err:
+            await hass.services.async_call(DOMAIN, "refresh_cloud_scenes", {"entity_id": [light]}, blocking=True)
+    assert "secret" not in str(err.value) and hass.states.get(sel).attributes["options"] == ["Fresh"]
+
+
+async def test_setup_survives_auth_failure_of_catalog(hass, fake_cloud):
+    from custom_components.lepro_led.api import LeproAuthError
+    sess = Session("tok", "u1", MqttInfo("h", 8883, "r", "c"), FDEV, {})
+
+    async def fetch(self):
+        return sess, b"r", b"c"
+
+    with patch("custom_components.lepro_led.LeproApi.fetch_session", fetch), \
+         patch("custom_components.lepro_led.LeproApi.login", AsyncMock(side_effect=LeproAuthError("x"))), \
+         patch("custom_components.lepro_led.LeproApi.fetch_scenes", AsyncMock(side_effect=LeproAuthError("HTTP 401"))):
+        e, t, reg = await _setup(hass, fake_cloud)
+    assert e.state.value == "loaded" and reg.async_get_entity_id("light", DOMAIN, "1000001")
