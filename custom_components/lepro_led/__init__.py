@@ -11,7 +11,7 @@ import ssl
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady, ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ConfigEntryAuthFailed, ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -25,6 +25,8 @@ from .const import (
     CONF_REGION,
     DEFAULT_REGION,
     DOMAIN,
+    SERVICE_APPLY_CLOUD_SCENE,
+    SERVICE_REFRESH_CLOUD_SCENES,
     SERVICE_SET_SCENE,
     SERVICE_SET_SEGMENTS,
     SERVICES,
@@ -35,7 +37,7 @@ from .runtime import LeproRuntime
 from .transport_mqtt import CloudMqttTransport
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = ["light", "number", "binary_sensor"]
+PLATFORMS = ["light", "number", "binary_sensor", "select"]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 type LeproConfigEntry = ConfigEntry[LeproRuntime]
 
@@ -127,11 +129,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: LeproConfigEntry) -> boo
         runtime.handle_message,
         runtime.handle_status,
     )
+    runtime.api, runtime.token = api, session.token
     entry.runtime_data = runtime
     await runtime.transport.start()
     if not await runtime.transport.async_wait_connected(15):
         await runtime.async_shutdown()
         raise ConfigEntryNotReady("MQTT broker not reachable")
+
+    for did in runtime.devices:  # optional catalog: a failure must never break the basic light integration
+        try:
+            await runtime.refresh_scenes(did)
+        except LeproApiError as err:
+            _LOGGER.debug("cloud scene catalog unavailable: %s", err)
 
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -208,6 +217,7 @@ def _resolve_device(hass: HomeAssistant, entity_id: str):
 def _register_services(hass: HomeAssistant) -> None:
     _register_set_segments(hass)
     _register_set_scene(hass)
+    _register_cloud_scene_services(hass)
 
 
 def _register_set_scene(hass: HomeAssistant) -> None:
@@ -235,6 +245,63 @@ def _register_set_scene(hass: HomeAssistant) -> None:
             await rt.send(did, lambda s: s.command_scene(**args))
 
     hass.services.async_register(DOMAIN, SERVICE_SET_SCENE, handle, schema=SCENE_SCHEMA)
+
+
+APPLY_CLOUD_SCENE_SCHEMA = vol.All(
+    vol.Schema(
+        {
+            vol.Required("entity_id"): cv.entity_ids,
+            vol.Required("scene_id"): vol.All(str, vol.Length(min=1, max=80)),
+            vol.Optional("brightness"): _strict_int(1, 255),
+            vol.Optional("brightness_pct"): _strict_number(1, 100),
+        }
+    ),
+    lambda d: d if not ("brightness" in d and "brightness_pct" in d) else (_ for _ in ()).throw(vol.Invalid("use either brightness or brightness_pct, not both")),
+)
+REFRESH_SCHEMA = vol.Schema({vol.Required("entity_id"): cv.entity_ids})
+
+
+def _unique_targets(hass: HomeAssistant, entity_ids) -> dict:
+    targets: dict = {}
+    for entity_id in entity_ids:
+        found = _resolve_device(hass, entity_id)
+        if found is None:
+            raise ServiceValidationError(f"{entity_id} is not a loaded Lepro light")
+        targets[(id(found[0]), found[1])] = found
+    return targets
+
+
+def _register_cloud_scene_services(hass: HomeAssistant) -> None:
+    if not hass.services.has_service(DOMAIN, SERVICE_APPLY_CLOUD_SCENE):
+
+        async def apply(call: ServiceCall) -> None:
+            targets = _unique_targets(hass, call.data["entity_id"])
+            args = {k: call.data[k] for k in ("brightness", "brightness_pct") if k in call.data}
+            plan = []
+            for rt, did in targets.values():
+                scene = rt.scenes.get(did, {}).get(call.data["scene_id"])
+                if scene is None:
+                    raise ServiceValidationError("unknown cloud scene for this strip; refresh the catalog or pick a listed scene")
+                try:
+                    copy.deepcopy(rt.devices[did].state).command_cloud_scene(scene.d50, **args)
+                except ValueError as err:
+                    raise ServiceValidationError(str(err)) from err
+                plan.append((rt, did, scene))
+            for rt, did, scene in plan:
+                await rt.send(did, lambda s, d50=scene.d50: s.command_cloud_scene(d50, **args))
+
+        hass.services.async_register(DOMAIN, SERVICE_APPLY_CLOUD_SCENE, apply, schema=APPLY_CLOUD_SCENE_SCHEMA)
+
+    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_CLOUD_SCENES):
+
+        async def refresh(call: ServiceCall) -> None:
+            for rt, did in _unique_targets(hass, call.data["entity_id"]).values():
+                try:
+                    await rt.refresh_scenes(did)
+                except LeproApiError as err:
+                    raise HomeAssistantError(f"Could not read Lepro cloud scenes: {err}") from err
+
+        hass.services.async_register(DOMAIN, SERVICE_REFRESH_CLOUD_SCENES, refresh, schema=REFRESH_SCHEMA)
 
 
 def _register_set_segments(hass: HomeAssistant) -> None:

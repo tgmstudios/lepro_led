@@ -67,3 +67,48 @@ set_scene:
       selector:
         select:
           options: [clockwise, counterclockwise]
+
+apply_cloud_scene:
+  name: Apply cloud scene
+  description: >-
+    Apply a saved Lepro cloud scene (read from your account, listed on the strip's cloud scene select
+    entity) by its stable scene_id. The server-provided d50 string is replayed unchanged; one MQTT command
+    per strip. This is different from set_scene, which builds a local palette. Brightness is left alone
+    unless given.
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          integration: lepro_led
+          domain: light
+          multiple: true
+    scene_id:
+      required: true
+      example: cid-123
+      description: Stable id shown in the select entity's scene_ids attribute.
+      selector:
+        text:
+    brightness:
+      selector:
+        number:
+          min: 1
+          max: 255
+    brightness_pct:
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+refresh_cloud_scenes:
+  name: Refresh cloud scenes
+  description: Re-read the saved cloud scene catalog for the given strips (read-only request, only when called).
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          integration: lepro_led
+          domain: light
+          multiple: true

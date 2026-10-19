@@ -8,7 +8,7 @@ Nothing here has been verified against hardware by this change; encodings marked
 |---|---|---|
 | Power on/off (d1) | Implemented | app `DpSwitchLedValue`; legacy |
 | RGB colour, all segments (d50) | Implemented | legacy-golden, 72 vectors |
-| Scene palette/speed/brightness for the 6 verified DIY effects | Implemented (local palette only) | `lepro_led.set_scene`; cloud scene save/catalog and the 40 builtin config types remain unmapped |
+| Scene palette/speed/brightness for the 6 verified DIY effects | Implemented (local palette only) | `lepro_led.set_scene`; separate from cloud scenes (next rows) |
 | Per-segment colour, 25 segments (d50 groups) | Implemented | legacy-golden; `lepro_led.set_segments` service paints 1-25 colours as even blocks |
 | Effects solid/breath/gradient/clockwise/counterclockwise/circular (d2=2, d50) | Implemented | legacy-golden. `none` is **not** added; `solid` stays |
 | Effects flash, wave_1-4, laser_1-4 (d2=3, d60) | Implemented | legacy-golden prefix table `200..208 0064` |
@@ -19,9 +19,10 @@ Nothing here has been verified against hardware by this change; encodings marked
 | Colour temperature / white (d3/d4) | Not applicable to S1-5 | app config: `colorPicker=diy2`, not rgbcw. Not exposed |
 | HSV colour (d5) | Not applicable to S1-5 | used by bulbs; codec removed rather than shipped untested |
 | Bulb (B-series) / SE1 support from upstream v1.4.1 | Pending / not ported | Not needed for the registered devices; port separately, keeping `solid` and region default `na` |
-| Full 40 `striplight` effect table (ids 2-30, 50-60) | **Pending** | ids/ranges are in `config_effect.json`, but the id -> d50 serialization and display names are unproven; the existing 6 d50 effect codes are NOT assumed to be those ids. Research in progress |
+| Cloud saved scenes: list + apply | Implemented (read-only GET, runtime-verified once on one account; no hardware apply test) | `GET /v3/scene/list/fid/{fid}/did/{did}/cid/0/limit/50/timestamp/{unix_s}` returns `striplight{dp:d50,res}`; `select.<strip>_cloud_scene`, `lepro_led.apply_cloud_scene` (entity_id + stable `scene_id`, optional brightness) and `lepro_led.refresh_cloud_scenes`. Apply publishes `{d1:1,d2:2,d50:<server res verbatim>[,d52]}` per static app code (`AIotUtils`). Labels come from the server (`groupName`, else `Scene <cid/sid>`). Catalog is the first page only (limit 50, cid 0); pagination and other cids are unproven. A scene shows as active only after the device reports the identical d50 string; otherwise the effect/palette attributes stay empty rather than guessing one of the six local effects |
+| "40 builtin effects" | **Corrected: not 40 named presets** | `config_effect.json` holds ~40 *parameter-bound entries* (ids 2-30, 50-60 with ranges), not named effects and not an id->d50 table. The preset list is cloud-provided per account/strip and is shown dynamically; no names are invented. Mapping config ids to d50 remains unproven |
 | Custom palette / DIY scene save (`/scene/diy/strip/save`) | Pending | cloud endpoint known, payload not captured |
-| Scenes (cloud `/scene/*`) | Phone/cloud only (for now) | payloads not captured |
+| Scene save/edit/delete, scene groups, social sharing (`/scene/*` writes) | Phone/cloud only | not implemented; only the list GET is used |
 | Music mode (`music2`, d60/d61/d62 streaming) | Phone/cloud only | `voice_controller=0`: the S1-5 has no mic; the app streams phone audio frames. Integration does not claim music sync; it would require an audio source plus a validated d62 frame format |
 | Countdown d9 / timers d11-d13,d24 / sleep d17-19 / wake d20-22 | **Pending - not sent** | payload layouts undecoded; no entities, no guessed DPs |
 | Power memory d14, blink d16, strip length d53 | Pending | semantic values not verified |

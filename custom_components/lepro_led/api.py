@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from .const import (
     FAMILY_LIST_PATH,
     LOGIN_PATH,
     REGIONS,
+    SCENE_LIST_PATH,
     USER_PROFILE_PATH,
 )
 
@@ -106,6 +108,85 @@ def _parse_devices(dev) -> list:
     if not isinstance(items, list):
         raise LeproApiError("unexpected device list response")
     return [d for d in items if isinstance(d, dict) and d.get("did") is not None]
+
+
+SCENE_LIMIT = 50
+_PATH_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_D50_RES = re.compile(r"[A-Za-z0-9:;._-]{1,2048}")
+_LABEL_MAX = 64
+
+
+@dataclass(frozen=True)
+class CloudScene:
+    """A saved cloud scene for one strip. `d50` is the server string, replayed verbatim."""
+
+    scene_id: str
+    label: str
+    d50: str
+
+
+def _path_id(value, what: str) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, str)) or not _PATH_ID.fullmatch(str(value)):
+        raise LeproApiError(f"invalid {what}")
+    return str(value)
+
+
+def _id_part(value) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    text = str(value).strip()
+    if not _PATH_ID.fullmatch(text) or set(text) == {"0"}:
+        return None  # empty / all-zero ids carry no identity
+    return text
+
+
+def _parse_scenes(resp, fid: str, did: str) -> list[CloudScene]:
+    """Validate a scene-list response; rows that are not usable striplight d50 scenes are skipped."""
+    body = _obj(resp, "scene list")
+    code = body.get("code")
+    if isinstance(code, bool) or code != 0:
+        raise LeproApiError("unexpected scene list response")
+    data = _obj(body.get("data"), "scene list")
+    rows = data.get("list")
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise LeproApiError("unexpected scene list response")
+    found: list[tuple[str, str | None, str]] = []
+    seen_ids: set[str] = set()
+    for row in rows[:SCENE_LIMIT]:
+        if not isinstance(row, dict):
+            continue
+        # identity keys, when the server includes them, must match the strip we asked about
+        if any(k in row and str(row[k]) != want for k, want in (("fid", fid), ("did", did))):
+            continue
+        strip = row.get("striplight")
+        if not isinstance(strip, dict) or strip.get("dp") != "d50":
+            continue
+        res = strip.get("res")
+        if not isinstance(res, str) or not _D50_RES.fullmatch(res):
+            continue
+        cid, sid = _id_part(row.get("cid")), _id_part(row.get("sid"))
+        scene_id = f"cid-{cid}" if cid else f"sid-{sid}" if sid else None
+        if scene_id is None or scene_id in seen_ids:
+            continue
+        seen_ids.add(scene_id)
+        name = row.get("groupName")
+        label = None
+        if isinstance(name, str):
+            label = " ".join(name.split())[:_LABEL_MAX] or None
+        found.append((scene_id, label, res))
+    counts: dict[str, int] = {}
+    for scene_id, label, _ in found:
+        counts[label or scene_id] = counts.get(label or scene_id, 0) + 1
+    scenes, used = [], set()
+    for scene_id, label, res in found:
+        shown = label or f"Scene {scene_id.split('-', 1)[1]}"
+        if counts[label or scene_id] > 1 or shown in used:
+            shown = f"{shown} ({scene_id})"
+        used.add(shown)
+        scenes.append(CloudScene(scene_id, shown, res))
+    return scenes
 
 
 class LeproApi:
@@ -203,3 +284,10 @@ class LeproApi:
         dev = await self._json("GET", DEVICE_LIST_PATH.format(fid=fid, timestamp=headers["Timestamp"]), headers=headers)
         devices = _parse_devices(dev)
         return Session(token, uid, info, devices, headers), root, cert
+
+    async def fetch_scenes(self, token: str, fid, did) -> list[CloudScene]:
+        """Read-only GET of the saved cloud scenes of one strip (first page, cid 0, limit 50)."""
+        fid, did = _path_id(fid, "family id"), _path_id(did, "device id")
+        headers = self._headers(token)
+        path = SCENE_LIST_PATH.format(fid=fid, did=did, timestamp=headers["Timestamp"])
+        return _parse_scenes(await self._json("GET", path, headers=headers), fid, did)

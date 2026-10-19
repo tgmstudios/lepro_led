@@ -54,7 +54,11 @@ class LeproLedLight(LeproEntity, LightEntity):
     @property
     def extra_state_attributes(self):
         s = self.state_obj
-        return {"palette": [list(c) for c in s.palette], "effect_speed": round(s.speed), "direction": s.direction}
+        attrs = {"palette": [list(c) for c in s.palette], "effect_speed": round(s.speed), "direction": s.direction}
+        # a cloud scene is only reported as active once the device itself reported its exact d50 string
+        confirmed = "d50_str" not in self._rt.pending_confirmation(self._did)
+        attrs["cloud_scene"] = s.cloud_scene if confirmed else None
+        return attrs
 
     async def async_turn_on(self, **kwargs):
         await self._rt.send(

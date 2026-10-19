@@ -14,7 +14,7 @@ This custom integration logs in to **Lepro Cloud**, retrieves your lights and st
 - Login with your **Lepro** account (email + password) and choose your region (default `na`).
 - Discovers lights and strips in your account's first family.
 - Light, 25 segment lights (S1-5), speed and sensitivity numbers, a cloud-online diagnostic sensor.
-- `lepro_led.set_scene` service: apply one of the six verified DIY effects (`solid`, `breath`, `gradient`, `clockwise`, `counterclockwise`, `circular`) with a custom palette of 1-25 RGB colours, `speed` 0-100 and `brightness` (1-255) or `brightness_pct` (1-100), in one command. At least one field is required; omitted fields keep their current value. `direction` (`clockwise`/`counterclockwise`) only applies to those two effects. If a strip is in music mode, an explicit `effect` is required to change palette/speed (otherwise the call is rejected); brightness-only is still allowed. This is a local palette applied through HA; it does not read, save or name Lepro cloud scenes. Example:
+- `lepro_led.set_scene` service: apply one of the six verified DIY effects (`solid`, `breath`, `gradient`, `clockwise`, `counterclockwise`, `circular`) with a custom palette of 1-25 RGB colours, `speed` 0-100 and `brightness` (1-255) or `brightness_pct` (1-100), in one command. At least one field is required; omitted fields keep their current value. `direction` (`clockwise`/`counterclockwise`) only applies to those two effects. If a strip is in music mode, an explicit `effect` is required to change palette/speed (otherwise the call is rejected); brightness-only is still allowed. This is a local palette applied through HA; it does not read or save Lepro cloud scenes (see cloud scenes below). Example:
   ```yaml
   action: lepro_led.set_scene
   data:
@@ -25,6 +25,7 @@ This custom integration logs in to **Lepro Cloud**, retrieves your lights and st
     brightness_pct: 80
   ```
   The palette is supplied to Home Assistant; commands still use cloud MQTT. The strip light also exposes `palette`, `effect_speed` and `direction` attributes. Each strip receives one command, but a multi-strip call is not a distributed transaction: a device report or connection failure during the call can leave only some strips updated.
+- **Cloud scenes**: at setup (and on `lepro_led.refresh_cloud_scenes`) the integration reads each strip's saved Lepro cloud scenes (read-only, first 50). They appear as options of the per-strip `Cloud scene` select; `lepro_led.apply_cloud_scene` applies one by `scene_id` (shown in the select's `scene_ids` attribute) with optional brightness. The server's d50 string is replayed unchanged, and a scene is shown as active only after the device reports it. Names are whatever your account returns; if the catalog cannot be read the rest of the integration still works. Not the same as `set_scene`. The previously documented "40 effects" are 40 parameter-bound config entries, not 40 named presets.
 - `lepro_led.set_segments` service. Effects, brightness (device range 100-1000) and availability follow the device.
 - Local/BLE/LAN control is **not** supported (unproven); see [docs/feature-parity.md](docs/feature-parity.md) for what is implemented, cloud/phone-only, pending or blocked.
 

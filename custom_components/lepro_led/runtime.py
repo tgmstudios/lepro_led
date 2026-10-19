@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from homeassistant.exceptions import HomeAssistantError
 
+from .api import CloudScene, LeproApiError, LeproAuthError
 from .state import DeviceState
 from .transport_mqtt import TransportError
 
@@ -45,6 +46,9 @@ class LeproRuntime:
     def __init__(self, devices: list[dict]):
         self.devices: dict[str, DeviceCtx] = {str(d["did"]): DeviceCtx(str(d["did"]), d) for d in devices}
         self.transport = None
+        self.api = None  # LeproApi, set at setup; used only for read-only scene GETs
+        self.token: str | None = None
+        self.scenes: dict[str, dict[str, CloudScene]] = {did: {} for did in self.devices}  # did -> scene_id -> scene
         self._tasks: set[asyncio.Task] = set()
 
     # ---- listeners ---------------------------------------------------------
@@ -153,6 +157,26 @@ class LeproRuntime:
             if dps:
                 ctx.pending |= committed
         self._notify(did)
+
+    # ---- cloud scene catalog ---------------------------------------------------
+    def set_scenes(self, did: str, scenes: list[CloudScene]) -> None:
+        ctx = self.devices[did]
+        self.scenes[did] = {sc.scene_id: sc for sc in scenes}
+        ctx.state.cloud_scenes = {sc.d50: sc.label for sc in scenes}
+        self._notify(did)
+
+    async def refresh_scenes(self, did: str) -> int:
+        """Read the strip's cloud scenes (GET only). Raises LeproApiError; keeps the old catalog on failure."""
+        fid = self.devices[did].info.get("fid")
+        if self.api is None or self.token is None or fid is None:
+            raise LeproApiError("cloud scene catalog unavailable")
+        try:
+            scenes = await self.api.fetch_scenes(self.token, fid, did)
+        except LeproAuthError:
+            self.token = await self.api.login()  # token may have expired; one re-login, then retry
+            scenes = await self.api.fetch_scenes(self.token, fid, did)
+        self.set_scenes(did, scenes)
+        return len(scenes)
 
     # ---- lifecycle -----------------------------------------------------------
     async def async_shutdown(self) -> None:

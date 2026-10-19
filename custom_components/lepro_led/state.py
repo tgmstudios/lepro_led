@@ -34,24 +34,39 @@ class DeviceState:
         self.speed: float = 50
         self.sensitivity: float = 50
         self.online: bool | None = None
+        self.d50_str: str | None = None  # last d50 string seen/sent
+        self.cloud_scenes: dict[str, str] = {}  # server d50 string -> scene label (runtime catalog)
         self.touched: set[str] = set()  # attribute names written by the last apply_report
 
     # ---- derived ---------------------------------------------------------
     @property
-    def effect(self) -> str:
+    def cloud_scene(self) -> str | None:
+        """Label of the catalog scene whose exact d50 string is active (d2=2), else None."""
+        if self.mode == 2 and self.d50_str is not None:
+            return self.cloud_scenes.get(self.d50_str)
+        return None
+
+    @property
+    def effect(self) -> str | None:
         if self.mode == 3:
             return self.d60_effect or "flash"
+        if self.cloud_scene is not None:
+            return None  # server-defined mode: do not claim one of the six local effects
         return self.d50_effect
 
     @property
     def direction(self) -> str | None:
         """Rotation direction of the current d50 effect (verified types 4/3), else None."""
+        if self.cloud_scene is not None:
+            return None
         return self.d50_effect if self.d50_effect in DIRECTIONAL and self.mode != 3 else None
 
     @property
     def palette(self) -> list:
         """Distinct colours of the d50 segment string, in order."""
         out: list = []
+        if self.cloud_scene is not None:
+            return out
         for c in self.colors:
             if not out or out[-1] != c:
                 out.append(c)
@@ -80,12 +95,17 @@ class DeviceState:
                 self.brightness = b
                 touched.add("brightness")
                 changed = True
-        if "d50" in data:
+        if "d50" in data and isinstance(data["d50"], str) and data["d50"] in self.cloud_scenes:
+            self.d50_str = data["d50"]  # exact catalog string: never re-interpret it as a local effect
+            touched.add("d50_str")
+            changed = True
+        elif "d50" in data:
             parsed = p.parse_d50(data["d50"])
             if parsed is not None:
                 self.colors = parsed.colors
                 self.d50_effect = parsed.effect
-                touched.update(("colors", "d50_effect"))
+                self.d50_str = data["d50"]
+                touched.update(("colors", "d50_effect", "d50_str"))
                 if parsed.effect != "solid":  # solid carries no speed; keep the last one
                     self.speed = parsed.speed
                     touched.add("speed")
@@ -108,6 +128,7 @@ class DeviceState:
     # ---- outbound ---------------------------------------------------------
     def _d50_payload(self, power: bool) -> dict:
         cmd = {"d2": 2, "d50": p.build_d50(self.colors, self.d50_effect, self.speed)}
+        self.d50_str = cmd["d50"]
         if power:
             cmd = {"d1": 1, **cmd}
         self.mode = 2
@@ -245,6 +266,28 @@ class DeviceState:
                 self.speed = speed
             cmd = self._d50_payload(power=True)
             self.on = True
+        if bri is not None:
+            self.brightness = bri
+            cmd["d52"] = p.ha_to_d52(bri)
+        return cmd
+
+    def command_cloud_scene(self, d50: str, brightness=None, brightness_pct=None) -> dict:
+        """Replay a server-provided d50 string verbatim (d1=1, d2=2, d50 [, d52])."""
+        if d50 not in self.cloud_scenes:
+            raise ValueError("unknown cloud scene")
+        if brightness is not None and brightness_pct is not None:
+            raise ValueError("use either brightness or brightness_pct, not both")
+        bri = None
+        if brightness is not None:
+            if not isinstance(brightness, int) or isinstance(brightness, bool) or not 1 <= brightness <= 255:
+                raise ValueError("brightness must be an integer 1..255")
+            bri = brightness
+        if brightness_pct is not None:
+            if not _is_number(brightness_pct) or not 1 <= brightness_pct <= 100:
+                raise ValueError("brightness_pct must be 1..100")
+            bri = max(1, min(255, round(brightness_pct * 255 / 100)))
+        cmd = {"d1": 1, "d2": 2, "d50": d50}
+        self.on, self.mode, self.d50_str = True, 2, d50
         if bri is not None:
             self.brightness = bri
             cmd["d52"] = p.ha_to_d52(bri)

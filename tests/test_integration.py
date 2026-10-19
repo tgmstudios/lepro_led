@@ -74,7 +74,7 @@ async def test_setup_preserves_unique_ids_and_creates_expected_entities(hass, fa
         assert did in uids and f"{did}_speed" in uids and f"{did}_sensitivity" in uids
         assert f"{did}_online" in uids
         assert {f"{did}_segment_{i:02d}" for i in range(1, 26)} <= uids
-    assert len(uids) == 2 * (1 + 25 + 2 + 1)
+    assert len(uids) == 2 * (1 + 25 + 2 + 1 + 1)
     t = fake_cloud.instances[0]
     assert "le/1000001/prp/#" in t.topics and t.client_id.startswith("lepro-app-")
     # reconnect-triggered state requests were sent for both devices

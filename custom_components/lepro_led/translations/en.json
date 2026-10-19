@@ -75,6 +75,11 @@
       "online": {
         "name": "Cloud online"
       }
+    },
+    "select": {
+      "cloud_scene": {
+        "name": "Cloud scene"
+      }
     }
   },
   "services": {

@@ -13,6 +13,7 @@ LOGIN_PATH = "/user/login"
 FAMILY_LIST_PATH = "/family/list/timestamp/{timestamp}"
 USER_PROFILE_PATH = "/user/profile"
 DEVICE_LIST_PATH = "/v3/device/list/fid/{fid}/timestamp/{timestamp}"
+SCENE_LIST_PATH = "/v3/scene/list/fid/{fid}/did/{did}/cid/0/limit/50/timestamp/{timestamp}"
 # /statistic/record is app telemetry and is intentionally never called.
 
 CONF_ACCOUNT = "account"
@@ -24,7 +25,9 @@ CONF_FCM = "fcm_token"
 
 SERVICE_SET_SEGMENTS = "set_segments"
 SERVICE_SET_SCENE = "set_scene"
-SERVICES = (SERVICE_SET_SEGMENTS, SERVICE_SET_SCENE)
+SERVICE_APPLY_CLOUD_SCENE = "apply_cloud_scene"
+SERVICE_REFRESH_CLOUD_SCENES = "refresh_cloud_scenes"
+SERVICES = (SERVICE_SET_SEGMENTS, SERVICE_SET_SCENE, SERVICE_APPLY_CLOUD_SCENE, SERVICE_REFRESH_CLOUD_SCENES)
 
 
 def canonical_unique_id(account: str, region: str) -> str:
