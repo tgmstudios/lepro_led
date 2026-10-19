@@ -26,6 +26,8 @@ from .const import (
     DEFAULT_REGION,
     DOMAIN,
     SERVICE_APPLY_CLOUD_SCENE,
+    SERVICE_REQUEST_DEBUG_STATE,
+    SERVICE_SEND_DEBUG_COMMAND,
     SERVICE_REFRESH_CLOUD_SCENES,
     SERVICE_SET_SCENE,
     SERVICE_SET_SEGMENTS,
@@ -37,7 +39,7 @@ from .runtime import LeproRuntime
 from .transport_mqtt import CloudMqttTransport
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = ["light", "number", "binary_sensor", "select"]
+PLATFORMS = ["light", "number", "binary_sensor", "select", "switch"]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 type LeproConfigEntry = ConfigEntry[LeproRuntime]
 
@@ -217,6 +219,7 @@ def _register_services(hass: HomeAssistant) -> None:
     _register_set_segments(hass)
     _register_set_scene(hass)
     _register_cloud_scene_services(hass)
+    _register_debug_services(hass)
 
 
 def _register_set_scene(hass: HomeAssistant) -> None:
@@ -301,6 +304,59 @@ def _register_cloud_scene_services(hass: HomeAssistant) -> None:
                     raise HomeAssistantError(f"Could not read Lepro cloud scenes: {err}") from err
 
         hass.services.async_register(DOMAIN, SERVICE_REFRESH_CLOUD_SCENES, refresh, schema=REFRESH_SCHEMA)
+
+
+def _find_runtime(hass: HomeAssistant, device_id: str, entry_id: str | None):
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry_id and entry.entry_id != entry_id:
+            continue
+        rt = getattr(entry, "runtime_data", None)
+        if rt is not None and device_id in rt.devices:
+            return rt
+    raise ServiceValidationError(f"No loaded Lepro device with device_id={device_id}")
+
+
+def _register_debug_services(hass: HomeAssistant) -> None:
+    """Upstream (Sanji78 1.4.x) protocol-investigation services, restricted to devices in loaded entries."""
+    if not hass.services.has_service(DOMAIN, SERVICE_SEND_DEBUG_COMMAND):
+
+        async def send(call: ServiceCall) -> None:
+            did = str(call.data["device_id"])
+            rt = _find_runtime(hass, did, call.data.get("entry_id"))
+            # published verbatim as a raw command; same single-publish path (and lock) as other commands
+            await rt.send(did, lambda s, d=dict(call.data["payload"]): d)
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SEND_DEBUG_COMMAND,
+            send,
+            schema=vol.Schema(
+                {
+                    vol.Required("device_id"): vol.All(vol.Coerce(str), vol.Length(min=1)),
+                    vol.Required("payload"): dict,
+                    vol.Optional("entry_id"): cv.string,
+                }
+            ),
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_REQUEST_DEBUG_STATE):
+
+        async def request(call: ServiceCall) -> None:
+            did = str(call.data["device_id"])
+            rt = _find_runtime(hass, did, call.data.get("entry_id"))
+            await rt._publish(did, "get", {"d": call.data["keys"]})
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REQUEST_DEBUG_STATE,
+            request,
+            schema=vol.Schema(
+                {
+                    vol.Required("device_id"): vol.All(vol.Coerce(str), vol.Length(min=1)),
+                    vol.Optional("entry_id"): cv.string,
+                    vol.Optional("keys", default=["d1", "d2", "d3", "d4", "d5", "d30", "d50", "d52", "d60", "online"]): [cv.string],
+                }
+            ),
+        )
 
 
 def _register_set_segments(hass: HomeAssistant) -> None:

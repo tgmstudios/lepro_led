@@ -39,6 +39,11 @@ class DeviceState:
         # True while d50_str is a server-defined string (known catalog scene, or one that was in the
         # catalog when seen): local colors/effect/speed are then stale and must not be shown
         self.cloud_raw: bool = False
+        # B-series bulbs / SE1 (d2=0 white: d3 brightness + d4 colour temp; d2=1 colour: d5 HSV)
+        self.b_brightness: int | None = None  # white-mode brightness, HA 1..255
+        self.b_kelvin: int | None = None
+        self.b_rgb: tuple | None = None
+        self.b_rgb_brightness: int | None = None
         self.touched: set[str] = set()  # attribute names written by the last apply_report
 
     # ---- derived ---------------------------------------------------------
@@ -121,6 +126,18 @@ class DeviceState:
                 self.brightness = b
                 touched.add("brightness")
                 changed = True
+        if "d3" in data and (v := p.d3_to_ha(data["d3"])) is not None and _is_number(data["d3"]):
+            self.b_brightness = v
+            touched.add("b_brightness")
+            changed = True
+        if "d4" in data and _is_number(data["d4"]):
+            self.b_kelvin = p.d4_to_kelvin(data["d4"])
+            touched.add("b_kelvin")
+            changed = True
+        if "d5" in data and (parsed5 := p.parse_d5(data["d5"])) is not None:
+            self.b_rgb, self.b_rgb_brightness = parsed5
+            touched.update(("b_rgb", "b_rgb_brightness"))
+            changed = True
         if "d50" in data and isinstance(data["d50"], str) and data["d50"] in self.cloud_scenes:
             self.d50_str = data["d50"]  # exact catalog string: never re-interpret it as a local effect
             self.cloud_raw = True
@@ -321,3 +338,35 @@ class DeviceState:
             self.brightness = bri
             cmd["d52"] = p.ha_to_d52(bri)
         return cmd
+
+    # ---- B-series (bulbs / SE1) -------------------------------------------------
+    def b_brightness_now(self) -> int | None:
+        if self.mode == 1:
+            return self.b_rgb_brightness or self.b_brightness
+        return self.b_brightness
+
+    def command_b_turn_on(self, brightness=None, rgb=None, kelvin=None) -> dict:
+        """Bare turn-on sends only d1 (the bulb remembers its state); other args pick RGB or white mode."""
+        if rgb is not None:
+            rgb = _check_rgb(rgb)
+        if brightness is not None and not 1 <= int(brightness) <= 255:
+            raise ValueError("brightness must be 1..255")
+        if kelvin is not None and not _is_number(kelvin):
+            raise ValueError("invalid colour temperature")
+        self.on = True
+        if rgb is None and kelvin is None and brightness is None:
+            return {"d1": 1}
+        bri = int(brightness) if brightness is not None else (self.b_brightness_now() or 255)
+        white_like = rgb is not None and max(rgb) - min(rgb) <= 13  # saturation <= ~5%
+        if rgb is not None and not white_like:
+            self.mode, self.b_rgb, self.b_rgb_brightness = 1, rgb, bri
+            return {"d1": 1, "d2": 1, "d5": p.build_d5(rgb, bri)}
+        if rgb is None and kelvin is None and self.mode == 1 and self.b_rgb is not None:
+            self.b_rgb_brightness = bri  # brightness-only while in colour mode keeps the hue
+            return {"d1": 1, "d2": 1, "d5": p.build_d5(self.b_rgb, bri)}
+        d4 = p.kelvin_to_d4(kelvin) if kelvin is not None else (
+            p.kelvin_to_d4(self.b_kelvin) if self.b_kelvin is not None else 500
+        )
+        self.mode, self.b_brightness = 0, bri
+        self.b_kelvin = p.d4_to_kelvin(d4)
+        return {"d1": 1, "d2": 0, "d3": p.ha_to_d3(bri), "d4": d4}

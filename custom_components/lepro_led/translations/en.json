@@ -12,7 +12,8 @@
           "region": "Region"
         },
         "data_description": {
-          "language": "Used for requests to the Lepro API."
+          "language": "Used for requests to the Lepro API.",
+          "region": "Select your Lepro account region"
         }
       },
       "reauth_confirm": {
@@ -61,6 +62,9 @@
       },
       "segment": {
         "name": "Segment {index}"
+      },
+      "bulb": {
+        "name": "Bulb"
       }
     },
     "number": {
@@ -79,6 +83,11 @@
     "select": {
       "cloud_scene": {
         "name": "Cloud scene"
+      }
+    },
+    "switch": {
+      "power": {
+        "name": "Power"
       }
     }
   },

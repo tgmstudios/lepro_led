@@ -242,3 +242,18 @@ def test_scene_invalid_input_rejected_before_mutation(kw):
     with pytest.raises(ValueError):
         s.command_scene(**kw)
     assert vars(s) == before
+
+
+def test_b_series_reports_and_commands_do_not_touch_strip_fields():
+    s = DeviceState()
+    before = (s.colors, s.d50_effect, s.d50_str)
+    assert s.apply_report({"d2": 0, "d3": 500, "d4": 500})
+    assert s.b_brightness == 128 and s.b_kelvin == 4600
+    assert s.apply_report({"d2": 1, "d5": "000003E80190"})
+    assert s.b_rgb == (255, 0, 0) and s.b_rgb_brightness == p.d3_to_ha(400)
+    s.apply_report({"d3": "x", "d4": True, "d5": "zz"})  # malformed ignored
+    assert (s.colors, s.d50_effect, s.d50_str) == before
+    assert s.command_b_turn_on(brightness=100) == {"d1": 1, "d2": 1, "d5": "000003E80190"[:8] + f"{p.ha_to_d3(100):04X}"}
+    assert s.command_b_turn_on(rgb=(250, 250, 250)) ["d2"] == 0  # white-like -> white mode
+    with pytest.raises(ValueError):
+        s.command_b_turn_on(brightness=0)

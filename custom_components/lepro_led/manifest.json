@@ -1,13 +1,19 @@
 {
   "domain": "lepro_led",
-  "name": "Lepro LED Strip",
-  "codeowners": ["@tgmstudios"],
+  "name": "Lepro LED",
+  "codeowners": [
+    "@tgmstudios"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/tgmstudios/lepro_led",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/tgmstudios/lepro_led/issues",
-  "loggers": ["custom_components.lepro_led"],
-  "requirements": ["aiomqtt>=2.4.0"],
-  "version": "1.1.0"
+  "loggers": [
+    "custom_components.lepro_led"
+  ],
+  "requirements": [
+    "aiomqtt>=2.4.0"
+  ],
+  "version": "1.5.0"
 }

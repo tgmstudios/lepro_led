@@ -197,3 +197,60 @@ def d52_to_ha(value):
         return None
     v = max(D52_MIN, min(D52_MAX, v))
     return 1 + int(round((v - D52_MIN) * 254 / (D52_MAX - D52_MIN)))
+
+
+# ---- B-series bulbs / SE1 (ported from upstream Sanji78/lepro_led 1.4.x) -------------------------
+# Evidence: upstream README captures of official-app MQTT writes (RGB: d2=1 + d5 "HHHHSSSSVVVV",
+# white: d2=0 + d3 brightness 0..1000 + d4 colour temperature 0..1000). Not hardware-verified here.
+B_SERIES_MARKERS = ("B1", "BC1", "BP1", "B2", "B3", "T1", "SE1")
+B_KELVIN_MIN, B_KELVIN_MAX = 2700, 6500
+
+
+def is_b_series(series) -> bool:
+    s = str(series or "").upper()
+    return any(m in s for m in B_SERIES_MARKERS)
+
+
+def build_d5(rgb, brightness_ha: int) -> str:
+    """HSV string: hue degrees from the colour, saturation fixed 1000, value = brightness (0..1000)."""
+    import colorsys
+
+    r, g, b = (max(0, min(255, int(c))) for c in rgb)
+    hue = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)[0]
+    return f"{int(round(hue * 360)) % 360:04X}03E8{ha_to_d3(brightness_ha):04X}"
+
+
+def parse_d5(d5):
+    """-> (rgb at full value, brightness 1..255) or None. Value is brightness, not colour darkness."""
+    import colorsys
+
+    if not isinstance(d5, str) or len(d5) < 12:
+        return None
+    try:
+        hue, sat, val = int(d5[0:4], 16), int(d5[4:8], 16), int(d5[8:12], 16)
+    except ValueError:
+        return None
+    r, g, b = colorsys.hsv_to_rgb((hue % 360) / 360, max(0.0, min(1.0, sat / 1000)), 1.0)
+    return (int(round(r * 255)), int(round(g * 255)), int(round(b * 255))), d3_to_ha(val)
+
+
+def ha_to_d3(ha: int) -> int:
+    return max(1, min(1000, int(round(max(0, min(255, int(ha))) * 1000 / 255))))
+
+
+def d3_to_ha(value):
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(255, int(round(max(0, min(1000, v)) * 255 / 1000))))
+
+
+def d4_to_kelvin(d4) -> int:
+    d4 = max(0, min(1000, int(d4)))
+    return round(B_KELVIN_MIN + d4 * (B_KELVIN_MAX - B_KELVIN_MIN) / 1000)
+
+
+def kelvin_to_d4(kelvin) -> int:
+    k = max(B_KELVIN_MIN, min(B_KELVIN_MAX, int(kelvin)))
+    return round((k - B_KELVIN_MIN) * 1000 / (B_KELVIN_MAX - B_KELVIN_MIN))

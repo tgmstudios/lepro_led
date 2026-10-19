@@ -98,3 +98,14 @@ def test_brightness_roundtrip_monotonic():
         assert d >= prev
         prev = d
         assert abs(p.d52_to_ha(d) - b) <= 1
+
+
+def test_b_series_codecs_match_upstream_app_captures():
+    assert p.build_d5((255, 0, 0), 255) == "000003E803E8"
+    assert p.build_d5((0, 255, 0), 255) == "007803E803E8"
+    assert p.build_d5((0, 0, 255), 255) == "00F003E803E8"
+    assert p.parse_d5("007803E803E8") == ((0, 255, 0), 255)
+    assert p.parse_d5("bad") is None and p.parse_d5(123) is None
+    assert [p.ha_to_d3(x) for x in (255,)] == [1000]
+    assert p.d4_to_kelvin(0) == 2700 and p.d4_to_kelvin(1000) == 6500 and p.kelvin_to_d4(4600) == 500
+    assert p.is_b_series("SE1") and p.is_b_series("BC1") and not p.is_b_series("S1-5") and not p.is_b_series(None)

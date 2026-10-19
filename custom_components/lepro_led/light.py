@@ -5,6 +5,7 @@ from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_EFFECT,
     ATTR_RGB_COLOR,
+    ATTR_COLOR_TEMP_KELVIN,
     ColorMode,
     LightEntity,
     LightEntityFeature,
@@ -18,6 +19,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
     rt = entry.runtime_data
     ents = []
     for did, ctx in rt.devices.items():
+        if p.is_b_series(ctx.info.get("series")):
+            ents.append(LeproBulbLight(rt, did))
+            continue
         ents.append(LeproLedLight(rt, did))
         if "S1-5" in (ctx.info.get("series") or ""):
             ents.extend(LeproSegmentLight(rt, did, i) for i in range(p.SEGMENTS))
@@ -122,6 +126,60 @@ class LeproSegmentLight(LeproEntity, LightEntity):
 
     async def async_turn_off(self, **kwargs):
         # Legacy behaviour kept: a segment cannot be off alone, turning it off powers the strip off.
+        def off(s):
+            s.on = False
+            return {"d1": 0}
+
+        await self._rt.send(self._did, off)
+
+
+class LeproBulbLight(LeproEntity, LightEntity):
+    """B-series bulbs and SE1 (ported from upstream 1.4.x): RGB (d2=1/d5) and white/colour temperature (d2=0/d3/d4).
+
+    No effects are offered: only the six strip DIY effects and the d60 effects are evidenced, and only for S1-5.
+    """
+
+    _attr_translation_key = "bulb"
+    _attr_supported_color_modes = {ColorMode.RGB, ColorMode.COLOR_TEMP}
+    _attr_min_color_temp_kelvin = p.B_KELVIN_MIN
+    _attr_max_color_temp_kelvin = p.B_KELVIN_MAX
+
+    def __init__(self, rt, did):
+        super().__init__(rt, did)
+        self._attr_unique_id = did
+
+    @property
+    def is_on(self):
+        return self.state_obj.on
+
+    @property
+    def color_mode(self):
+        return ColorMode.RGB if self.state_obj.mode == 1 else ColorMode.COLOR_TEMP
+
+    @property
+    def brightness(self):
+        return self.state_obj.b_brightness_now()
+
+    @property
+    def rgb_color(self):
+        return self.state_obj.b_rgb if self.state_obj.mode == 1 else None
+
+    @property
+    def color_temp_kelvin(self):
+        s = self.state_obj
+        return (s.b_kelvin or 4000) if s.mode != 1 else None
+
+    async def async_turn_on(self, **kwargs):
+        await self._rt.send(
+            self._did,
+            lambda s: s.command_b_turn_on(
+                brightness=kwargs.get(ATTR_BRIGHTNESS),
+                rgb=tuple(kwargs[ATTR_RGB_COLOR]) if ATTR_RGB_COLOR in kwargs else None,
+                kelvin=kwargs.get(ATTR_COLOR_TEMP_KELVIN),
+            ),
+        )
+
+    async def async_turn_off(self, **kwargs):
         def off(s):
             s.on = False
             return {"d1": 0}

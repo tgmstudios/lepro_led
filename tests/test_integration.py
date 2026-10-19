@@ -74,7 +74,8 @@ async def test_setup_preserves_unique_ids_and_creates_expected_entities(hass, fa
         assert did in uids and f"{did}_speed" in uids and f"{did}_sensitivity" in uids
         assert f"{did}_online" in uids
         assert {f"{did}_segment_{i:02d}" for i in range(1, 26)} <= uids
-    assert len(uids) == 2 * (1 + 25 + 2 + 1 + 1)
+    assert all(f"{did}_power" in uids for did in ("1000001", "1000002"))
+    assert len(uids) == 2 * (1 + 25 + 2 + 1 + 1 + 1)
     t = fake_cloud.instances[0]
     assert "le/1000001/prp/#" in t.topics and t.client_id.startswith("lepro-app-")
     # reconnect-triggered state requests were sent for both devices
@@ -494,3 +495,59 @@ async def test_services_survive_until_last_entry_unloaded(hass, fake_cloud, firs
         await hass.async_block_till_done()
         for svc in ("set_segments", "set_scene"):
             assert not hass.services.has_service(DOMAIN, svc)
+
+
+# ---- upstream 1.4.x features woven in --------------------------------------
+BULB = {"did": 1000003, "name": "Bulb", "series": "B1"}
+
+
+async def _setup_with(hass, fake_cloud, devices):
+    async def fetch(self):
+        return Session("tok", "u1", MqttInfo("h", 8883, "r", "c"), devices, {}), b"root", b"cert"
+
+    with patch("custom_components.lepro_led.LeproApi.fetch_session", fetch):
+        e = entry()
+        e.add_to_hass(hass)
+        await hass.config_entries.async_setup(e.entry_id)
+        await hass.async_block_till_done()
+    return e, FakeTransport.instances[-1]
+
+
+async def test_power_switch_sends_only_d1_and_keeps_existing_light_ids(hass, fake_cloud):
+    e, t = await _setup_with(hass, fake_cloud, DEVICES)
+    reg = er.async_get(hass)
+    eid = reg.async_get_entity_id("switch", DOMAIN, "1000001_power")
+    assert eid and reg.async_get_entity_id("light", DOMAIN, "1000001")
+    await hass.services.async_call("switch", "turn_on", {"entity_id": eid}, blocking=True)
+    assert t.sent[-1] == ("le/1000001/prp/set", {**t.sent[-1][1], "d": {"d1": 1}})
+    await hass.services.async_call("switch", "turn_off", {"entity_id": eid}, blocking=True)
+    assert t.sent[-1][1]["d"] == {"d1": 0}
+
+
+async def test_bulb_is_b_series_light_with_color_temp_and_rgb(hass, fake_cloud):
+    e, t = await _setup_with(hass, fake_cloud, [BULB])
+    reg = er.async_get(hass)
+    eid = reg.async_get_entity_id("light", DOMAIN, "1000003")
+    assert reg.async_get_entity_id("light", DOMAIN, "1000003_segment_01") is None
+    await hass.services.async_call("light", "turn_on", {"entity_id": eid, "color_temp_kelvin": 4000, "brightness": 255}, blocking=True)
+    assert _sets(t)[-1]["d"] == {"d1": 1, "d2": 0, "d3": 1000, "d4": 342}
+    await hass.services.async_call("light", "turn_on", {"entity_id": eid, "rgb_color": [0, 255, 0], "brightness": 255}, blocking=True)
+    assert _sets(t)[-1]["d"] == {"d1": 1, "d2": 1, "d5": "007803E803E8"}
+    await hass.services.async_call("light", "turn_on", {"entity_id": eid}, blocking=True)
+    assert _sets(t)[-1]["d"] == {"d1": 1}
+
+
+async def test_debug_services_target_only_loaded_devices(hass, fake_cloud):
+    from homeassistant.exceptions import ServiceValidationError
+
+    e, t = await _setup_with(hass, fake_cloud, DEVICES)
+    await hass.services.async_call(DOMAIN, "request_debug_state", {"device_id": "1000001", "keys": ["d1"]}, blocking=True)
+    assert t.sent[-1] == ("le/1000001/prp/get", {"d": ["d1"]})
+    await hass.services.async_call(DOMAIN, "send_debug_command", {"device_id": 1000001, "payload": {"d1": 0}}, blocking=True)
+    assert t.sent[-1][0] == "le/1000001/prp/set" and t.sent[-1][1]["d"] == {"d1": 0}
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(DOMAIN, "send_debug_command", {"device_id": "999", "payload": {"d1": 0}}, blocking=True)
+    n = len(t.sent)
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(DOMAIN, "request_debug_state", {"device_id": "1000001", "entry_id": "nope"}, blocking=True)
+    assert len(t.sent) == n
