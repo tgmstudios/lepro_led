@@ -1,0 +1,18 @@
+set_segments:
+  name: Set segment colours
+  description: >-
+    Paint the 25 segments of an S1-5 strip. 1-25 RGB colours are spread in even blocks
+    (e.g. two colours = 13 + 12 segments). Uses the same d50 colour string as the segment lights.
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          integration: lepro_led
+          domain: light
+          multiple: true
+    colors:
+      required: true
+      example: "[[255,0,0],[0,0,255]]"
+      selector:
+        object:

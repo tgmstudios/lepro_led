@@ -13,14 +13,11 @@ This custom integration logs in to **Lepro Cloud**, retrieves your lights and st
 
 ## ✨ Features
 
-- Login with your **Lepro** account (email + password).  
-- Automatically discovers all **Lepro lights and strips** in your account.  
-- Sensors for:
-  - Connection state and online/offline status
-  - Device model, firmware, and MAC address
-  - Brightness, color temperature, and RGB values
-- Turn lights **on/off**, set **brightness**, **color**, and **effects**.  
-- Automatic token renewal to maintain connectivity.
+- Login with your **Lepro** account (email + password) and choose your region (default `na`).
+- Discovers lights and strips in your account's first family.
+- Light, 25 segment lights (S1-5), speed and sensitivity numbers, a cloud-online diagnostic sensor.
+- `lepro_led.set_segments` service. Effects, brightness (device range 100-1000) and availability follow the device.
+- Local/BLE/LAN control is **not** supported (unproven); see [docs/feature-parity.md](docs/feature-parity.md) for what is implemented, cloud/phone-only, pending or blocked.
 
 ---
 
