@@ -16,4 +16,10 @@ jobs:
           category: integration
           # No brand assets are bundled and the integration is not in home-assistant/brands.
           # Remove this once brand/icon.png is added or the domain is registered.
-          ignore: brands
+          # License exception (documented in README): the upstream LICENSE.md
+          # (Sanji78/lepro_led) currently reads "All Rights Reserved", which HACS
+          # cannot map to an SPDX id. We do NOT relicense or alter it. This fork is
+          # therefore not eligible for the default HACS catalogue until upstream
+          # clarifies its terms; it is installable only as a custom repository.
+          # All other HACS checks still run and must pass.
+          ignore: brands license
